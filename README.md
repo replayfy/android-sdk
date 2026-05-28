@@ -15,12 +15,17 @@ in place but the recording engine ships in follow-up commits:
 - ✅ Tap tracker — per-View OnTouchListener wrap, WindowManagerGlobal
   walk catches dialogs/popups, widget classification + value extraction
 - ✅ Manual screen tagging (`Replay.tagScreenName`)
-- ✅ Snapshot pipeline (tree-only) — view tree serializer emits
+- ✅ Snapshot pipeline (tree + bitmap) — view tree serializer emits
   `native_snapshot` events on screen change + 500ms after each tap.
-  Player can render a wireframe today.
-- ⏳ Snapshot pipeline (bitmap) — PixelCopy + Legacy Canvas, image
-  bytes uploaded to `/v1/replay/assets/:hash` for high-fidelity playback
-- ⏳ Persistent upload queue — WorkManager when app is dead
+  Full-screen PNG captured via Legacy `View.draw`, SHA-256 hashed,
+  uploaded to `/v1/replay/assets/:hash`, embedded as `root.imageRef`.
+  Player renders pixel-accurate playback.
+- ✅ Persistent upload queue — failed live batches persist to
+  `filesDir/replay-queue/`. `SessionUploadWorker` (WorkManager) drains
+  on next foreground or whenever NetworkType.CONNECTED returns. Capped
+  at 500 queued files / ~25 MB to keep disk pressure bounded.
+- ⏳ Snapshot pipeline (PixelCopy) — adds SurfaceView/video capture
+  (Legacy `View.draw` can't see hardware surfaces)
 - ⏳ Network capture — OkHttp Interceptor
 - ⏳ Crash handler — Thread.UncaughtExceptionHandler
 - ⏳ Occlusion / privacy views

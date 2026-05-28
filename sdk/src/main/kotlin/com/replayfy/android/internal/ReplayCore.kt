@@ -11,6 +11,7 @@ import com.replayfy.android.ReplayConfig
 import com.replayfy.android.internal.capture.AssetUploader
 import com.replayfy.android.internal.capture.SnapshotCapture
 import com.replayfy.android.internal.tracker.TapTracker
+import com.replayfy.android.internal.upload.BatchUploader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,6 +55,7 @@ internal object ReplayCore {
     @Volatile private var config: ReplayConfig? = null
     @Volatile private var runtime: SessionRuntime? = null
     @Volatile private var sender: BatchSender? = null
+    @Volatile private var uploader: BatchUploader? = null
     @Volatile private var lifecycleObserver: SessionLifecycleObserver? = null
     @Volatile private var tapTracker: TapTracker? = null
     @Volatile private var snapshotCapture: SnapshotCapture? = null
@@ -138,10 +140,18 @@ internal object ReplayCore {
         }
         appContext = applicationContext
         config = cfg
-        sender = BatchSender(cfg)
+        val newSender = BatchSender(cfg)
+        sender = newSender
+        // Wrap with the persistent-queue uploader. flushNow() goes
+        // through this so failed batches land on disk and get drained
+        // later by SessionUploadWorker. One-shot drain scheduled
+        // immediately below picks up anything queued during a
+        // previous process lifetime.
+        uploader = BatchUploader(applicationContext, cfg, newSender)
+        uploader?.scheduleDrain()
 
         if (cfg.distinctId != null) {
-            sender?.identity = IdentifyPayload(distinctId = cfg.distinctId)
+            newSender.identity = IdentifyPayload(distinctId = cfg.distinctId)
         }
 
         // Now that we have an apiKey + apiHost, the snapshot pipeline
@@ -314,13 +324,14 @@ internal object ReplayCore {
     }
 
     /**
-     * Drain the buffer and POST. Synchronous wrt the OkHttp call so
-     * the caller knows when it's done. Safe to call from any thread
-     * (BatchSender's underlying client handles its own threading).
+     * Drain the buffer and POST via [BatchUploader] — which falls
+     * back to disk persistence + WorkManager retry when the live
+     * send fails. Safe to call from any thread (uploader internals
+     * handle their own threading).
      */
     private fun flushNow() {
         val rt = runtime ?: return
-        val s = sender ?: return
+        val up = uploader ?: return
         val events = rt.drain()
         if (events.isEmpty()) return
         val envelope = ReplayBatchEnvelope(
@@ -333,7 +344,7 @@ internal object ReplayCore {
             events = events,
             projectId = config?.projectId,
         )
-        s.send(envelope)
+        up.upload(envelope)
     }
 
     /**

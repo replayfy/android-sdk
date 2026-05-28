@@ -44,32 +44,57 @@ internal class BatchSender(
     var identity: IdentifyPayload? = null
 
     /**
-     * Synchronous send. Caller (BatchScheduler or stop()) is expected
-     * to invoke this from a coroutine on [Dispatchers.IO].
+     * Synchronous send. Caller (the upload pipeline) is expected to
+     * invoke this from a coroutine on [Dispatchers.IO].
      *
-     * Returns true if the server accepted the batch (HTTP 2xx), false
-     * otherwise. False is best-effort logged; we'll add the on-disk
-     * queue in the persistent-queue commit.
+     * Returns true if the server accepted the batch (HTTP 2xx),
+     * false otherwise. The persistent-queue layer
+     * ([com.replayfy.android.internal.upload.BatchUploader]) catches
+     * the false return and stages the JSON to disk.
      */
     fun send(envelope: ReplayBatchEnvelope): Boolean {
+        val json = serializeRequest(envelope, identity).toString()
+        return sendJson(
+            json = json,
+            sdkName = envelope.sdk.name,
+            sdkVersion = envelope.sdk.version,
+        )
+    }
+
+    /**
+     * Sends a pre-serialized JSON body. Used by the WorkManager
+     * worker that drains the on-disk queue at next app launch — the
+     * worker reads bytes verbatim from disk without re-deserializing
+     * to a typed [ReplayBatchEnvelope].
+     *
+     * Identity is whatever was baked into the JSON at write time;
+     * we don't re-attach the current process's identity (would
+     * mis-attribute crash sessions to the next user).
+     */
+    fun sendJson(json: String, sdkName: String, sdkVersion: String): Boolean {
         return try {
-            val body = serializeRequest(envelope, identity).toString()
-                .toRequestBody(JSON)
+            val body = json.toRequestBody(JSON)
             val request = Request.Builder()
                 .url(joinUrl(config.apiHost, "/v1/replay/batch"))
                 .post(body)
                 .header("x-replay-api-key", config.apiKey)
-                .header("user-agent", "${envelope.sdk.name}/${envelope.sdk.version}")
+                .header("user-agent", "$sdkName/$sdkVersion")
                 .build()
             client.newCall(request).execute().use { response ->
                 response.isSuccessful
             }
         } catch (t: Throwable) {
-            // Best-effort log via android.util.Log — verbose only so we
-            // don't pollute the host app's Logcat at INFO+.
             android.util.Log.v(TAG, "batch send failed: ${t.message}")
             false
         }
+    }
+
+    /** Public for the queue layer — serialize without sending so the
+     *  queue can write the body to disk before attempting the live
+     *  POST. Identity attached at serialize time, frozen in the
+     *  stored bytes. */
+    fun serialize(envelope: ReplayBatchEnvelope): String {
+        return serializeRequest(envelope, identity).toString()
     }
 
     private fun serializeRequest(
