@@ -8,6 +8,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import java.util.Locale
 import com.replayfy.android.BuildConfig
 import com.replayfy.android.ReplayConfig
+import com.replayfy.android.internal.capture.AssetUploader
 import com.replayfy.android.internal.capture.SnapshotCapture
 import com.replayfy.android.internal.tracker.TapTracker
 import kotlinx.coroutines.CoroutineScope
@@ -110,6 +111,9 @@ internal object ReplayCore {
                 // Snapshot pipeline. Shares the activity holder
                 // ownership with the tracker via TapTracker.currentActivity().
                 // Fires on screen resume + 500ms after each tap.
+                // Bitmap capture + asset uploader are wired in
+                // [init] once we have the api key — pre-init
+                // snapshots ship as tree-only.
                 val snapshot = SnapshotCapture(
                     activityProvider = { tracker.currentActivity() },
                     emit = ::emitSnapshot,
@@ -138,6 +142,15 @@ internal object ReplayCore {
 
         if (cfg.distinctId != null) {
             sender?.identity = IdentifyPayload(distinctId = cfg.distinctId)
+        }
+
+        // Now that we have an apiKey + apiHost, the snapshot pipeline
+        // can upload bitmap assets. Wire the uploader + the
+        // pixels-capture flag (defaults true; remote config may
+        // flip it off later).
+        snapshotCapture?.let { snap ->
+            snap.assetUploader = AssetUploader(cfg)
+            snap.captureBitmaps = cfg.captureSnapshotPixels
         }
 
         // Build the runtime + emit the session_start event for the

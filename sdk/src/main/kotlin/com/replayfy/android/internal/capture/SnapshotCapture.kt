@@ -3,67 +3,67 @@ package com.replayfy.android.internal.capture
 import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
-import android.view.View
 import com.replayfy.android.internal.NativeSnapshotEventData
+import com.replayfy.android.internal.NativeViewNode
 import com.replayfy.android.internal.tracker.WindowRootDiscovery
 import com.replayfy.android.internal.tracker.WindowRootDiscovery.WindowRoot
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Schedules + executes view-tree snapshots and emits the resulting
- * payloads to ReplayCore.
+ * Schedules + executes view-tree snapshots, optionally with a
+ * full-screen bitmap attached as the root node's `imageRef`.
+ *
+ * Flow per capture:
+ *   1. (main thread) Build the tree via [ViewTreeSerializer] —
+ *      always emits, even if bitmap capture later fails.
+ *   2. (main thread) Capture the bitmap via [BitmapCapture] —
+ *      synchronous, Legacy View.draw path.
+ *   3. (background) Encode to PNG + SHA-256 hash via
+ *      [BitmapCapture.encodeAndHash].
+ *   4. (background) Upload via [AssetUploader.uploadOrCached] —
+ *      cached hits skip the network round-trip.
+ *   5. (background) Emit the snapshot event with `root.imageRef`
+ *      set to the resolved URL (or null when capture/upload failed,
+ *      in which case the player falls back to wireframe).
  *
  * Trigger policies (from docs/native-snapshot-format.md):
- *   • `screen_appeared` — called by the orchestrator on activity
- *     resume + manual setRoute. Runs immediately on the next vsync
- *     so the tree we capture matches what the user sees.
- *   • `idle` — debounced 500ms after the last tap. Catches
- *     post-interaction state (modal opened, list scrolled to a new
- *     position, etc.).
- *   • `tap` — request a snapshot if a tap mutated the tree (out of
- *     scope for v1; the idle trigger covers it).
- *   • `manual` — Replay.captureSnapshot() (future API).
+ *   • `screen_appeared` — called on activity resume + manual setRoute
+ *   • `idle` — debounced 500ms after the last tap
+ *   • `tap` — currently unused (idle covers it)
+ *   • `manual` — Replay.captureSnapshot() (future API)
  *
- * Coalescing: when multiple triggers fire close together (e.g. tap
- * during a screen transition fires both `screen_appeared` and
- * `idle`), only the most-recent trigger's snapshot is emitted. We
- * deduplicate by a monotonic generation counter; older scheduled
- * captures bail out on wake.
- *
- * All capture work runs on the main thread because View tree access
- * is main-thread-only on Android. JSON serialization happens later
- * in BatchSender on Dispatchers.IO.
+ * Coalescing: a generation counter ensures the most-recent trigger
+ * supersedes older pending captures. minIntervalMs (200ms) prevents
+ * thrashing on devices that fire onResume twice in quick succession.
  */
 internal class SnapshotCapture(
-    /** Source of the currently-resumed Activity for window-root
-     *  lookup. Same provider TapTracker uses. */
     private val activityProvider: () -> android.app.Activity?,
-    /** Called with the assembled payload to be relayed as a
-     *  `native_snapshot` event. */
     private val emit: (NativeSnapshotEventData) -> Unit,
 ) {
 
+    /** Wired in by [ReplayCore.init] once config + apiKey arrive.
+     *  Null pre-init — snapshots fall back to tree-only. */
+    @Volatile
+    var assetUploader: AssetUploader? = null
+
+    /** Reflects [com.replayfy.android.ReplayConfig.captureSnapshotPixels].
+     *  False until config lands or when remote config flips it off. */
+    @Volatile
+    var captureBitmaps: Boolean = false
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val generation = AtomicLong(0)
+    private val backgroundScope = CoroutineScope(Dispatchers.IO)
 
-    /** Debounce delay for idle-triggered snapshots, matches the
-     *  500ms documented in the snapshot-format spec. */
     private val idleDebounceMs = 500L
+    private val minIntervalMs = 200L
 
-    /** Last snapshot serialization timestamp. Used to skip rapid
-     *  back-to-back captures (e.g. transition fires `screen_appeared`
-     *  twice in quick succession on some devices). */
     @Volatile
     private var lastSnapshotAtMs: Long = 0L
 
-    /** Minimum gap between snapshots, regardless of trigger. */
-    private val minIntervalMs = 200L
-
-    /**
-     * Snapshot the current screen NOW. Caller specifies the trigger
-     * for the player's render heuristic. No-op if no activity is
-     * resumed (e.g. app is fully backgrounded).
-     */
     fun captureNow(trigger: String) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             doCapture(trigger)
@@ -72,27 +72,23 @@ internal class SnapshotCapture(
         }
     }
 
-    /**
-     * Schedule a snapshot to fire on the next idle window. Cancels
-     * any previously-scheduled idle capture so only the latest
-     * trigger fires.
-     */
     fun scheduleIdle() {
         val myGen = generation.incrementAndGet()
         mainHandler.postDelayed({
-            // Bail if a newer trigger superseded us before the delay
-            // elapsed.
             if (generation.get() != myGen) return@postDelayed
             doCapture("idle")
         }, idleDebounceMs)
     }
 
-    /** Cancel any pending idle capture without firing. */
     fun cancelPending() {
         generation.incrementAndGet()
         mainHandler.removeCallbacksAndMessages(null)
     }
 
+    /**
+     * Main-thread phase: capture tree + bitmap synchronously, hand
+     * off to background for encode + upload + emit.
+     */
     private fun doCapture(trigger: String) {
         val now = System.currentTimeMillis()
         if (now - lastSnapshotAtMs < minIntervalMs) return
@@ -101,43 +97,77 @@ internal class SnapshotCapture(
         try {
             val roots = WindowRootDiscovery.rootsFor(activity)
             val primary = pickPrimaryRoot(roots) ?: return
+
             val tree = ViewTreeSerializer.serialize(primary.view) ?: return
             val dm: DisplayMetrics = activity.resources.displayMetrics
-            val payload = NativeSnapshotEventData(
-                recorder = "native",
-                width = primary.view.width,
-                height = primary.view.height,
-                pixelRatio = dm.density.toDouble(),
-                trigger = trigger,
-                root = tree,
-            )
-            emit(payload)
+
+            // Bitmap capture is synchronous, must run on main. We do
+            // it BEFORE handing off to background so the view tree
+            // and pixels are from the same frame — otherwise a fast
+            // scroll between tree-walk and bitmap could produce a
+            // snapshot whose nodes don't match the painted pixels.
+            val bitmap = if (captureBitmaps) {
+                BitmapCapture.capture(primary.view, primary.params)
+            } else null
+
             lastSnapshotAtMs = now
+
+            // Hand off to background for encode + upload + emit. If
+            // there's no bitmap (capture disabled or failed), emit
+            // immediately on this thread — no async work needed.
+            if (bitmap == null) {
+                emitPayload(tree, primary, dm, trigger, imageRef = null)
+                return
+            }
+
+            // Snapshot the property locals before going async — the
+            // `var` could change between launch + body execution.
+            val uploader = assetUploader
+            backgroundScope.launch {
+                val asset = BitmapCapture.encodeAndHash(bitmap) // recycles bitmap
+                val imageRef = if (asset != null && uploader != null) {
+                    uploader.uploadOrCached(asset)
+                } else null
+                emitPayload(tree, primary, dm, trigger, imageRef)
+            }
         } catch (t: Throwable) {
             android.util.Log.w(TAG, "snapshot failed: ${t.message}")
         }
     }
 
     /**
-     * Pick the "primary" window root to snapshot. Heuristic:
-     *
-     *   1. Dialogs / popups when present — they're what the user is
-     *      currently interacting with.
-     *   2. The first non-system window otherwise (typically the
-     *      Activity's content view).
-     *
-     * In v2 we may capture ALL roots and ship them as a layered
-     * tree (so the dashboard can render the underlying activity
-     * behind a dialog). For v1, single-root keeps payload size
-     * predictable.
+     * Stitch the bitmap URL into the root node + emit the event.
+     * The root's `imageRef` lets the player render a pixel-accurate
+     * background; nested image nodes (Image / Icon widgets) will be
+     * populated in a follow-up commit that does per-node bitmap
+     * extraction.
      */
+    private fun emitPayload(
+        tree: NativeViewNode,
+        primary: WindowRoot,
+        dm: DisplayMetrics,
+        trigger: String,
+        imageRef: String?,
+    ) {
+        val rootWithImage = if (imageRef != null) {
+            tree.copy(imageRef = imageRef)
+        } else {
+            tree
+        }
+        emit(
+            NativeSnapshotEventData(
+                recorder = "native",
+                width = primary.view.width,
+                height = primary.view.height,
+                pixelRatio = dm.density.toDouble(),
+                trigger = trigger,
+                root = rootWithImage,
+            ),
+        )
+    }
+
     private fun pickPrimaryRoot(roots: List<WindowRoot>): WindowRoot? {
         if (roots.isEmpty()) return null
-        // Dialogs / popups have window type ≥ FIRST_SUB_WINDOW (1000)
-        // or FIRST_APPLICATION_WINDOW + N. Simplest heuristic: take
-        // the LAST root that's currently shown — Android's window
-        // list is ordered such that newer windows (dialogs) come
-        // after older ones (the Activity).
         for (i in roots.indices.reversed()) {
             val r = roots[i]
             if (r.view.isShown && r.view.width > 0 && r.view.height > 0) {
@@ -150,9 +180,4 @@ internal class SnapshotCapture(
     private companion object {
         private const val TAG = "ReplaySdk"
     }
-
-    // Suppress unused-warning for the import resolution; View is
-    // referenced via WindowRoot.view downstream.
-    @Suppress("unused")
-    private val viewClassReference: Class<View>? = null
 }

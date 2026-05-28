@@ -49,4 +49,16 @@ data class ReplayConfig(
 
     /** Max captured body size per network event. Bodies above are truncated. */
     val maxBodyBytes: Int = 4_096,
+
+    /**
+     * Capture pixel bytes (full-screen bitmap) alongside the view
+     * tree on each snapshot. Off → tree-only ("wireframe") playback,
+     * still useful but visually plain. On → pixel-accurate playback
+     * via the asset endpoint.
+     *
+     * Default on, but the dashboard's remote config can flip it off
+     * for plans without snapshot pixels, or workspaces that want
+     * lower bandwidth.
+     */
+    val captureSnapshotPixels: Boolean = true,
 )
