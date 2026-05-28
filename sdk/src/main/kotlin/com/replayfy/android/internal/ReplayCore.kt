@@ -8,6 +8,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import java.util.Locale
 import com.replayfy.android.BuildConfig
 import com.replayfy.android.ReplayConfig
+import com.replayfy.android.internal.capture.SnapshotCapture
 import com.replayfy.android.internal.tracker.TapTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,6 +55,7 @@ internal object ReplayCore {
     @Volatile private var sender: BatchSender? = null
     @Volatile private var lifecycleObserver: SessionLifecycleObserver? = null
     @Volatile private var tapTracker: TapTracker? = null
+    @Volatile private var snapshotCapture: SnapshotCapture? = null
 
     /** Whole-SDK coroutine scope. Cancelled on [stop]. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -104,6 +106,17 @@ internal object ReplayCore {
                 val tracker = TapTracker(emit = ::emitTap)
                 tracker.attach(app)
                 tapTracker = tracker
+
+                // Snapshot pipeline. Shares the activity holder
+                // ownership with the tracker via TapTracker.currentActivity().
+                // Fires on screen resume + 500ms after each tap.
+                val snapshot = SnapshotCapture(
+                    activityProvider = { tracker.currentActivity() },
+                    emit = ::emitSnapshot,
+                )
+                tracker.onScreenResumed = { snapshot.captureNow("screen_appeared") }
+                tracker.onTapEmitted = { snapshot.scheduleIdle() }
+                snapshotCapture = snapshot
             } catch (t: Throwable) {
                 android.util.Log.w(TAG, "TapTracker attach failed: ${t.message}")
             }
@@ -221,9 +234,17 @@ internal object ReplayCore {
         push(rt, type = "tap", data = tap)
     }
 
-    /** Manual screen tag override. Called by Replay.tagScreenName. */
+    private fun emitSnapshot(snapshot: NativeSnapshotEventData) {
+        val rt = runtime ?: return
+        push(rt, type = "native_snapshot", data = snapshot)
+    }
+
+    /** Manual screen tag override. Called by Replay.tagScreenName.
+     *  Also triggers an immediate snapshot so the dashboard shows
+     *  the tagged screen with its new identity. */
     fun setRoute(route: String) {
         tapTracker?.setRoute(route)
+        snapshotCapture?.captureNow("manual")
     }
 
     fun isRecording(): Boolean = runtime != null

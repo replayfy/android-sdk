@@ -54,6 +54,14 @@ internal class TapTracker(
     private val scanRunnable = Runnable { runScanNow() }
     @Volatile private var pendingActivity: Activity? = null
 
+    /** Currently-resumed activity, weakly held so a destroyed
+     *  activity can be GC'd. Read by SnapshotCapture for window
+     *  discovery. */
+    private val activityHolder = ActivityHolder()
+
+    /** Public accessor for the orchestrator + snapshot pipeline. */
+    fun currentActivity(): Activity? = activityHolder.get()
+
     /** Set when a scan is currently in flight to prevent re-entry
      *  (e.g. attaching a listener mutates the view → triggers a
      *  layout pass → ActivityLifecycleCallbacks re-fires → infinite). */
@@ -67,11 +75,18 @@ internal class TapTracker(
         }
 
         override fun onActivityResumed(activity: Activity) {
+            activityHolder.set(activity)
             updateRoute(activity)
             scheduleScan(activity)
+            // Notify any listeners (snapshot pipeline) that a screen
+            // change happened. Done after route update so the snapshot
+            // payload includes the right route.
+            onScreenResumed?.invoke(activity)
         }
 
-        override fun onActivityPaused(activity: Activity) {}
+        override fun onActivityPaused(activity: Activity) {
+            if (activityHolder.get() === activity) activityHolder.set(null)
+        }
 
         override fun onActivityStopped(activity: Activity) {
             // Drop tracked views for this activity. Recreated activities
@@ -86,6 +101,12 @@ internal class TapTracker(
 
         override fun onActivityDestroyed(activity: Activity) {}
     }
+
+    /** Hook for the orchestrator: fires on activity resume after
+     *  route + holder are updated. Used by SnapshotCapture to
+     *  schedule a `screen_appeared` snapshot. */
+    @Volatile
+    var onScreenResumed: ((Activity) -> Unit)? = null
 
     fun attach(application: Application) {
         application.registerActivityLifecycleCallbacks(activityCallbacks)
@@ -228,7 +249,15 @@ internal class TapTracker(
                 isSensitive = false, // wired up when occlusion lands
             ),
         )
+        // Snapshot pipeline subscribes via this hook to debounce an
+        // `idle` snapshot 500ms after the last tap. Catches
+        // post-interaction state (modal opened, list scrolled).
+        onTapEmitted?.invoke()
     }
+
+    /** Hook for the snapshot pipeline. Invoked after each tap. */
+    @Volatile
+    var onTapEmitted: (() -> Unit)? = null
 
     private fun updateRoute(activity: Activity) {
         // Default route = activity class simple name. tagScreenName()

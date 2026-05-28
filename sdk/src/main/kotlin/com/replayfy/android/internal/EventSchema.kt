@@ -121,6 +121,67 @@ internal data class TapEventData(
 )
 
 /**
+ * Bounds for a view tree node. Same shape as [TapBounds] — kept
+ * separate for clarity (different semantic: tap bounds are
+ * screen-relative, node bounds are parent-relative).
+ */
+internal data class NativeNodeBounds(
+    val x: Int, val y: Int, val w: Int, val h: Int,
+)
+
+/**
+ * One node in a captured view tree. Mirrors NativeViewNode in
+ * replay-web-sdk/docs/native-snapshot-format.md.
+ *
+ * Lean by design — every extra field is multiplied by tree size
+ * (10k views per screen is plausible on dense lists). Null/zero
+ * fields are omitted from the serialized JSON via the data-class
+ * encoder in BatchSender.
+ */
+internal data class NativeViewNode(
+    /** Sibling-index path id, e.g. "0/2/0". Player resolves taps
+     *  to nodes by walking this path. */
+    val id: String,
+    /** Wire-format type string from WidgetClassifier.UiType.wireName. */
+    val type: String,
+    /** Native class simple name (UIButton, ElevatedButton,
+     *  MaterialButton...). Player ignores; debugging only. */
+    val className: String? = null,
+    val bounds: NativeNodeBounds,
+    val text: String? = null,
+    /** Content-addressed asset hash. Wired in a follow-up commit when
+     *  bitmap capture lands. Null today. */
+    val imageRef: String? = null,
+    /** RGBA hex if solid color, e.g. "#ff336699". */
+    val backgroundColor: String? = null,
+    /** 0..1 alpha. Omitted when 1.0. */
+    val opacity: Double? = null,
+    /** True if this node or any ancestor was marked occluded. */
+    val occluded: Boolean? = null,
+    /** Accessibility content description. */
+    val ariaLabel: String? = null,
+    /** Children in back-to-front render order. */
+    val children: List<NativeViewNode>? = null,
+)
+
+/**
+ * The snapshot event payload. Triggered on screen_appeared / idle /
+ * tap / manual.
+ *
+ * @param trigger why the snapshot fired — informs the player whether
+ *                to render it eagerly (screen change) or lazily
+ *                (background idle capture).
+ */
+internal data class NativeSnapshotEventData(
+    val recorder: String, // "native"
+    val width: Int,
+    val height: Int,
+    val pixelRatio: Double,
+    val trigger: String, // "screen_appeared" | "idle" | "tap" | "manual"
+    val root: NativeViewNode,
+)
+
+/**
  * Identify payload — shipped out-of-band on the request body alongside
  * the envelope, not as a timeline event. Matches the web SDK's
  * BatchSender.setIdentify pattern.

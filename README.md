@@ -15,7 +15,11 @@ in place but the recording engine ships in follow-up commits:
 - ✅ Tap tracker — per-View OnTouchListener wrap, WindowManagerGlobal
   walk catches dialogs/popups, widget classification + value extraction
 - ✅ Manual screen tagging (`Replay.tagScreenName`)
-- ⏳ Snapshot pipeline — PixelCopy + Legacy Canvas fallback
+- ✅ Snapshot pipeline (tree-only) — view tree serializer emits
+  `native_snapshot` events on screen change + 500ms after each tap.
+  Player can render a wireframe today.
+- ⏳ Snapshot pipeline (bitmap) — PixelCopy + Legacy Canvas, image
+  bytes uploaded to `/v1/replay/assets/:hash` for high-fidelity playback
 - ⏳ Persistent upload queue — WorkManager when app is dead
 - ⏳ Network capture — OkHttp Interceptor
 - ⏳ Crash handler — Thread.UncaughtExceptionHandler
