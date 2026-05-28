@@ -104,17 +104,27 @@ object Replay {
         ReplayCore.setRoute(name)
     }
 
-    /** Mark a view as privacy-sensitive — its contents won't appear
-     *  in playback, taps on it are blanked. */
+    /**
+     * Mark a view as privacy-sensitive — its contents won't appear
+     * in playback, taps on it are blanked, and the view-tree
+     * snapshot reports it as `occluded`.
+     *
+     * Marks propagate down the view hierarchy: marking a `ViewGroup`
+     * automatically protects every descendant without per-child
+     * calls. Removing the mark from a parent (via
+     * [removePrivacyView]) restores subview visibility unless they
+     * were independently marked.
+     */
     @JvmStatic
     fun addPrivacyView(view: View) {
-        ReplayCore.stub("addPrivacyView(${view.javaClass.simpleName})")
+        com.replayfy.android.internal.privacy.PrivacyRegistry.add(view)
     }
 
-    /** Remove a previously-added privacy mark from a view. */
+    /** Remove a previously-added privacy mark. Safe to call even
+     *  for views that were never marked. */
     @JvmStatic
     fun removePrivacyView(view: View) {
-        ReplayCore.stub("removePrivacyView(${view.javaClass.simpleName})")
+        com.replayfy.android.internal.privacy.PrivacyRegistry.remove(view)
     }
 
     /** Pause schematic capture; events keep flowing. */

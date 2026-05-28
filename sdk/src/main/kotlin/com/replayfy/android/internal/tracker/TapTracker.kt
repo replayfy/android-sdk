@@ -10,6 +10,7 @@ import android.view.ViewGroup
 import com.replayfy.android.internal.TapBounds
 import com.replayfy.android.internal.TapEventData
 import com.replayfy.android.internal.TapPoint
+import com.replayfy.android.internal.privacy.PrivacyRegistry
 
 /**
  * Per-Activity tap capture.
@@ -220,9 +221,17 @@ internal class TapTracker(
             return
         }
 
-        val uiClass = view.javaClass.simpleName
-        val uiValue = ValueExtractor.extract(view, type)
-        val uiId = UiIdHasher.uiId(currentRoute, uiClass, uiValue)
+        // Privacy check — if the tapped view (or any ancestor) is
+        // marked sensitive via Replay.addPrivacyView, blank
+        // uiClass / uiValue / uiId so the wire event carries only
+        // the fact that a tap happened in this region — never WHICH
+        // button or WHAT text. Dashboard renders these as a generic
+        // "sensitive tap" marker.
+        val isSensitive = PrivacyRegistry.isSensitive(view)
+        val uiClass = if (isSensitive) "" else view.javaClass.simpleName
+        val uiValue = if (isSensitive) "" else ValueExtractor.extract(view, type)
+        val uiId = if (isSensitive) "$currentRoute:sensitive"
+            else UiIdHasher.uiId(currentRoute, uiClass, uiValue)
 
         // Bounds in screen coordinates so the player can position
         // tap markers without knowing the activity's window position.
@@ -243,10 +252,13 @@ internal class TapTracker(
                 point = point,
                 route = currentRoute,
                 uiClass = uiClass,
-                uiType = type.wireName,
+                // Sensitive taps flip uiType to "unknown" so funnels
+                // don't accidentally group them with regular
+                // interactions of the same underlying widget type.
+                uiType = if (isSensitive) "unknown" else type.wireName,
                 uiValue = uiValue,
                 uiId = uiId,
-                isSensitive = false, // wired up when occlusion lands
+                isSensitive = isSensitive,
             ),
         )
         // Snapshot pipeline subscribes via this hook to debounce an

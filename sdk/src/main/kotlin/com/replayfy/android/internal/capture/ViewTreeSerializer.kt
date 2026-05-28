@@ -68,9 +68,20 @@ internal object ViewTreeSerializer {
         )
 
         val type = WidgetClassifier.classify(view)
+
+        // Privacy check: if this view (or any ancestor) is in the
+        // PrivacyRegistry, blank human-readable content. We still
+        // ship bounds + type + children so the player can render
+        // the silhouette + privacy overlay correctly.
+        val occluded = com.replayfy.android.internal.privacy.PrivacyRegistry
+            .isSensitive(view)
+
         // Text content: same extractor the tap tracker uses. Field
-        // contents NEVER leak — only hint / placeholder.
-        val text = if (type == WidgetClassifier.UiType.TEXT ||
+        // contents NEVER leak — only hint / placeholder. Occluded
+        // views ship without text — player paints a noise pattern
+        // over them anyway.
+        val text = if (occluded) null
+        else if (type == WidgetClassifier.UiType.TEXT ||
             type == WidgetClassifier.UiType.BUTTON ||
             type == WidgetClassifier.UiType.FIELD
         ) {
@@ -92,7 +103,8 @@ internal object ViewTreeSerializer {
             out.takeIf { it.isNotEmpty() }
         } else null
 
-        val ariaLabel = view.contentDescription?.toString()
+        val ariaLabel = if (occluded) null
+        else view.contentDescription?.toString()
             ?.takeIf { it.isNotEmpty() && it != text }
 
         return NativeViewNode(
@@ -107,7 +119,11 @@ internal object ViewTreeSerializer {
             imageRef = null,
             backgroundColor = bgColor,
             opacity = opacity,
-            occluded = null, // wired when occlusion lands
+            // Ship `true` only when this view is itself sensitive
+            // (the dashboard inherits occluded down the subtree
+            // automatically via a parent's `occluded:true` mark).
+            // Omitted when false to save bytes.
+            occluded = if (occluded) true else null,
             ariaLabel = ariaLabel,
             children = children,
         )

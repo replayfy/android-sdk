@@ -83,8 +83,23 @@ internal object BitmapCapture {
             canvas.drawARGB(alpha, 0, 0, 0)
         }
 
+        // Collect privacy-view bounds BEFORE drawing so they're
+        // computed against the live view hierarchy on the main
+        // thread. The paint pass below runs in the same scope so
+        // the rects are still valid.
+        val privacyRects =
+            com.replayfy.android.internal.privacy.PrivacyRegistry
+                .sensitiveBounds(root)
+
         return try {
             root.draw(canvas)
+            // Paint a noise-pattern overlay over each privacy view's
+            // bounds AFTER view.draw so it sits on top of the captured
+            // pixels. The overlay only ever exists in the saved
+            // bitmap — never visible on the user's screen.
+            if (privacyRects.isNotEmpty()) {
+                paintPrivacyOverlay(canvas, privacyRects)
+            }
             bitmap
         } catch (t: Throwable) {
             // View painting can throw (custom Views with bugs, OEM
@@ -92,6 +107,46 @@ internal object BitmapCapture {
             android.util.Log.w(TAG, "view.draw failed: ${t.message}")
             bitmap.recycle()
             null
+        }
+    }
+
+    /** Diagonal-stripe pattern over privacy regions. Cheaper than a
+     *  real noise pattern (no per-pixel cost) and visually obvious
+     *  in playback — viewers immediately recognise the "this region
+     *  was hidden" signal. Mirrors the iOS implementation. */
+    private fun paintPrivacyOverlay(
+        canvas: android.graphics.Canvas,
+        rects: List<android.graphics.Rect>,
+    ) {
+        val fill = android.graphics.Paint().apply {
+            color = android.graphics.Color.argb(255, 38, 38, 38)
+            style = android.graphics.Paint.Style.FILL
+        }
+        val stripe = android.graphics.Paint().apply {
+            color = android.graphics.Color.argb(255, 89, 89, 89)
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = 2f
+        }
+        val spacing = 8f
+        for (rect in rects) {
+            // Solid dark base so any pixel that leaked through draw()
+            // is overwritten.
+            canvas.drawRect(rect, fill)
+            // Diagonal stripes at 45° spaced 8px apart. Clip to the
+            // rect so strokes don't bleed.
+            canvas.save()
+            canvas.clipRect(rect)
+            val diag = rect.width() + rect.height()
+            var x = rect.left.toFloat() - rect.height()
+            while (x < rect.left + diag) {
+                canvas.drawLine(
+                    x, rect.top.toFloat(),
+                    x + rect.height(), rect.bottom.toFloat(),
+                    stripe,
+                )
+                x += spacing
+            }
+            canvas.restore()
         }
     }
 
