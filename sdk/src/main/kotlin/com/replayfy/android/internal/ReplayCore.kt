@@ -200,6 +200,13 @@ internal object ReplayCore {
             snap.sessionIdProvider = { runtime?.sessionId }
         }
 
+        // Network capture wire — the Interceptor itself is exposed
+        // via Replay.networkInterceptor() for the customer to add to
+        // their OkHttpClient. Here we just wire the emit + config
+        // flags so the instance the customer creates can find them.
+        com.replayfy.android.internal.network.ReplayInterceptor.currentEmit = ::emitNetwork
+        com.replayfy.android.internal.network.ReplayInterceptor.configure(cfg)
+
         // Build the runtime + emit the session_start event for the
         // current screen. If the app is already in the foreground when
         // init lands (the typical case from Application.onCreate), the
@@ -293,6 +300,13 @@ internal object ReplayCore {
         // teardown discipline is correct).
         perfMetrics?.stop()
         perfMetrics = null
+        // Clear the network-interceptor emit closure so any
+        // in-flight OkHttp calls' interceptor doesn't push into
+        // the stopped runtime. The customer's interceptor instance
+        // stays installed on their OkHttpClient (we don't own it),
+        // but it'll silently no-op once emit is null.
+        com.replayfy.android.internal.network.ReplayInterceptor.currentEmit = null
+        com.replayfy.android.internal.network.ReplayInterceptor.enabled = false
     }
 
     // -----------------------------------------------------------------
@@ -312,6 +326,11 @@ internal object ReplayCore {
     private fun emitPerformance(perf: PerformanceEventData) {
         val rt = runtime ?: return
         push(rt, type = "performance", data = perf)
+    }
+
+    private fun emitNetwork(event: NetworkEventData) {
+        val rt = runtime ?: return
+        push(rt, type = "network", data = event)
     }
 
     /** Recovered previous-launch crashes pending emission. Populated

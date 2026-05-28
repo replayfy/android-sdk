@@ -182,6 +182,28 @@ internal data class NativeSnapshotEventData(
 )
 
 /**
+ * Network request captured by the OkHttp interceptor. Shape matches
+ * the web SDK + iOS SDK so the dashboard's Network panel renders
+ * without forking per-platform.
+ */
+internal data class NetworkEventData(
+    val requestId: String,
+    val transport: String, // "okhttp"
+    val method: String,
+    val url: String,
+    val statusCode: Int?,
+    val startedAt: Long,
+    val endedAt: Long?,
+    val durationMs: Long?,
+    val ok: Boolean?,
+    val requestHeaders: Map<String, String>? = null,
+    val responseHeaders: Map<String, String>? = null,
+    val requestBody: String? = null,
+    val responseBody: String? = null,
+    val error: String? = null,
+)
+
+/**
  * Crash event — emitted on next launch after a previous-process
  * crash. Ships as the standard `error` event type so the backend's
  * existing errorCount counter increments correctly; the `kind`

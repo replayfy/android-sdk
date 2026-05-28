@@ -90,6 +90,29 @@ object Replay {
     @JvmStatic
     fun isRecording(): Boolean = ReplayCore.isRecording()
 
+    /**
+     * Returns an OkHttp [Interceptor] that captures every request
+     * flowing through the [okhttp3.OkHttpClient] it's installed on.
+     *
+     * Wire via:
+     * ```
+     * val client = OkHttpClient.Builder()
+     *     .addInterceptor(Replay.networkInterceptor())
+     *     .build()
+     * ```
+     *
+     * Capture is gated on `ReplayConfig.captureNetwork` — when false,
+     * the interceptor passes through unchanged (zero overhead).
+     * Customers can flip the flag at any time via remote config.
+     *
+     * Header + body capture additionally gated by `captureHeaders` +
+     * `maxBodyBytes`. Body capture uses OkHttp's `peekBody` so the
+     * customer's downstream code still gets the full unconsumed body.
+     */
+    @JvmStatic
+    fun networkInterceptor(): okhttp3.Interceptor =
+        com.replayfy.android.internal.network.ReplayInterceptor()
+
     // ------------------------------------------------------------------
     //  Stubs — wired in follow-up commits. Calling these today logs a
     //  warning and no-ops, so customers can write integration code
