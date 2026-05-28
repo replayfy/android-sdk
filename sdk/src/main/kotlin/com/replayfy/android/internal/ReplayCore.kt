@@ -1,5 +1,6 @@
 package com.replayfy.android.internal
 
+import android.app.Application
 import android.content.Context
 import android.os.Build
 import android.util.DisplayMetrics
@@ -7,6 +8,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import java.util.Locale
 import com.replayfy.android.BuildConfig
 import com.replayfy.android.ReplayConfig
+import com.replayfy.android.internal.tracker.TapTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -51,6 +53,7 @@ internal object ReplayCore {
     @Volatile private var runtime: SessionRuntime? = null
     @Volatile private var sender: BatchSender? = null
     @Volatile private var lifecycleObserver: SessionLifecycleObserver? = null
+    @Volatile private var tapTracker: TapTracker? = null
 
     /** Whole-SDK coroutine scope. Cancelled on [stop]. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -88,6 +91,22 @@ internal object ReplayCore {
             // a real Lifecycle — log and continue. SDK will still work
             // if the customer calls init explicitly.
             android.util.Log.w(TAG, "ProcessLifecycleOwner unavailable: ${t.message}")
+        }
+
+        // Tap tracker attaches to the Application's
+        // ActivityLifecycleCallbacks here — earlier than init() so we
+        // catch the very first activity (otherwise the user's launcher
+        // activity could be onResume'd before init lands, and we'd
+        // miss every tap on the welcome screen).
+        val app = context.applicationContext as? Application
+        if (app != null) {
+            try {
+                val tracker = TapTracker(emit = ::emitTap)
+                tracker.attach(app)
+                tapTracker = tracker
+            } catch (t: Throwable) {
+                android.util.Log.w(TAG, "TapTracker attach failed: ${t.message}")
+            }
         }
     }
 
@@ -191,6 +210,20 @@ internal object ReplayCore {
         flushJob?.cancel()
         flushJob = null
         runtime = null
+    }
+
+    // -----------------------------------------------------------------
+    //  Tap tracker hook — relays TapEventData into the event buffer.
+    // -----------------------------------------------------------------
+
+    private fun emitTap(tap: TapEventData) {
+        val rt = runtime ?: return
+        push(rt, type = "tap", data = tap)
+    }
+
+    /** Manual screen tag override. Called by Replay.tagScreenName. */
+    fun setRoute(route: String) {
+        tapTracker?.setRoute(route)
     }
 
     fun isRecording(): Boolean = runtime != null

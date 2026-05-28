@@ -1,0 +1,243 @@
+package com.replayfy.android.internal.tracker
+
+import android.app.Activity
+import android.app.Application
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.View
+import android.view.ViewGroup
+import com.replayfy.android.internal.TapBounds
+import com.replayfy.android.internal.TapEventData
+import com.replayfy.android.internal.TapPoint
+
+/**
+ * Per-Activity tap capture.
+ *
+ * Hooks into the host app's [Application.ActivityLifecycleCallbacks].
+ * On every onActivityResumed / onActivityStarted, we schedule a tree
+ * walk via [Handler] (coalesced — multiple lifecycle events in the
+ * same frame produce ONE scan, matching UXCam's `loopLayout` design).
+ *
+ * The scan:
+ *   1. Get all window roots via [WindowRootDiscovery] (includes
+ *      dialogs, popups, dropdowns — not just the activity content).
+ *   2. Recursively walk each root's view tree.
+ *   3. For each interactive View not already tracked, swap in a
+ *      [TouchListenerWrapper] that preserves the original listener.
+ *
+ * Tap → emits a `TapEventData` via [emit] which the orchestrator
+ * relays as a `tap` ReplayEvent.
+ *
+ * Mirrors `com.uxcam.screenaction.tracker.ScreenActionTracker` from
+ * the UXCam decompiled source. We keep the same name shape so the
+ * decompiled-to-Kotlin mapping is obvious in code review.
+ */
+internal class TapTracker(
+    /** Called per tap with the metadata payload that becomes a
+     *  `tap` ReplayEvent. Implementation lives in ReplayCore so
+     *  we don't depend on its singleton from this package. */
+    private val emit: (TapEventData) -> Unit,
+) {
+
+    /** Current screen name — defaults to Activity class name, can
+     *  be overridden by `Replay.tagScreenName(name)`. */
+    @Volatile
+    var currentRoute: String = "/"
+        private set
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val registry = ViewRegistry()
+
+    // Coalesce repeated scan triggers — multiple lifecycle callbacks
+    // in the same frame collapse to one tree walk.
+    private val scanRunnable = Runnable { runScanNow() }
+    @Volatile private var pendingActivity: Activity? = null
+
+    /** Set when a scan is currently in flight to prevent re-entry
+     *  (e.g. attaching a listener mutates the view → triggers a
+     *  layout pass → ActivityLifecycleCallbacks re-fires → infinite). */
+    @Volatile private var scanning = false
+
+    private val activityCallbacks = object : Application.ActivityLifecycleCallbacks {
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+
+        override fun onActivityStarted(activity: Activity) {
+            scheduleScan(activity)
+        }
+
+        override fun onActivityResumed(activity: Activity) {
+            updateRoute(activity)
+            scheduleScan(activity)
+        }
+
+        override fun onActivityPaused(activity: Activity) {}
+
+        override fun onActivityStopped(activity: Activity) {
+            // Drop tracked views for this activity. Recreated activities
+            // (e.g. configuration change) get a fresh attachment pass.
+            if (pendingActivity === activity) pendingActivity = null
+            // Don't clear() the whole registry — other activities may
+            // still be in the back stack with attached listeners. The
+            // WeakHashMap GCs the entries when their Views are gone.
+        }
+
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+
+        override fun onActivityDestroyed(activity: Activity) {}
+    }
+
+    fun attach(application: Application) {
+        application.registerActivityLifecycleCallbacks(activityCallbacks)
+    }
+
+    fun detach(application: Application) {
+        application.unregisterActivityLifecycleCallbacks(activityCallbacks)
+        mainHandler.removeCallbacks(scanRunnable)
+        registry.clear()
+    }
+
+    /** Called by the orchestrator when tagScreenName() is invoked. */
+    fun setRoute(route: String) {
+        currentRoute = route
+    }
+
+    // -----------------------------------------------------------------
+    //  Scan loop — coalesced via Handler.post.
+    // -----------------------------------------------------------------
+
+    private fun scheduleScan(activity: Activity) {
+        pendingActivity = activity
+        mainHandler.removeCallbacks(scanRunnable)
+        mainHandler.post(scanRunnable)
+    }
+
+    private fun runScanNow() {
+        if (scanning) return
+        val activity = pendingActivity ?: return
+        pendingActivity = null
+        scanning = true
+        try {
+            val roots = WindowRootDiscovery.rootsFor(activity)
+            for (root in roots) {
+                if (root.view is ViewGroup) {
+                    walkSubtree(root.view)
+                } else {
+                    maybeAttachListener(root.view)
+                }
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w(TAG, "tap scan failed: ${t.message}")
+        } finally {
+            scanning = false
+        }
+    }
+
+    /** Depth-first walk. Skips subtrees rooted at invisible views. */
+    private fun walkSubtree(group: ViewGroup) {
+        if (!group.isShown) return
+        // Visit the group itself first — some apps use clickable
+        // ViewGroups as their primary button container.
+        if (WidgetClassifier.isInteractive(group)) {
+            maybeAttachListener(group)
+        }
+        val count = group.childCount
+        for (i in 0 until count) {
+            val child = group.getChildAt(i) ?: continue
+            if (child is ViewGroup) {
+                walkSubtree(child)
+            } else if (WidgetClassifier.isInteractive(child)) {
+                maybeAttachListener(child)
+            }
+        }
+    }
+
+    private fun maybeAttachListener(view: View) {
+        if (registry.contains(view)) return
+
+        // Skip Google's AdMob views — they install internal touch
+        // handlers that don't play nicely with reflection-based
+        // wrappers + customers don't want ad taps in their analytics
+        // anyway.
+        if (view.javaClass.name.startsWith("com.google.android.gms.ads")) {
+            return
+        }
+
+        val existing = TouchListenerWrapper.readExistingListener(view)
+        // If our wrapper is already installed (e.g. from a prior scan
+        // that skipped registry update due to a failure), don't
+        // double-wrap. The wrapper instance check is enough.
+        if (existing is TouchListenerWrapper) {
+            registry.add(view) // sync the registry to match reality
+            return
+        }
+
+        val positionInParent = (view.parent as? ViewGroup)?.indexOfChild(view) ?: -1
+        val wrapper = TouchListenerWrapper(
+            original = existing,
+            positionInParent = positionInParent,
+            onTap = ::onTapCaptured,
+        )
+        try {
+            view.setOnTouchListener(wrapper)
+            registry.add(view)
+        } catch (t: Throwable) {
+            android.util.Log.v(TAG, "attach failed for ${view.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    // -----------------------------------------------------------------
+    //  Tap → TapEventData
+    // -----------------------------------------------------------------
+
+    private fun onTapCaptured(view: View, x: Float, y: Float) {
+        val type = WidgetClassifier.classify(view)
+        if (type == WidgetClassifier.UiType.UNKNOWN) {
+            // Don't emit taps on unclassified views — too noisy, no
+            // useful semantic. The dashboard skips these for heatmaps
+            // anyway.
+            return
+        }
+
+        val uiClass = view.javaClass.simpleName
+        val uiValue = ValueExtractor.extract(view, type)
+        val uiId = UiIdHasher.uiId(currentRoute, uiClass, uiValue)
+
+        // Bounds in screen coordinates so the player can position
+        // tap markers without knowing the activity's window position.
+        val loc = IntArray(2)
+        view.getLocationOnScreen(loc)
+        val bounds = TapBounds(
+            x = loc[0], y = loc[1],
+            w = view.width, h = view.height,
+        )
+        val point = TapPoint(
+            x = (loc[0] + x).toInt(),
+            y = (loc[1] + y).toInt(),
+        )
+
+        emit(
+            TapEventData(
+                bounds = bounds,
+                point = point,
+                route = currentRoute,
+                uiClass = uiClass,
+                uiType = type.wireName,
+                uiValue = uiValue,
+                uiId = uiId,
+                isSensitive = false, // wired up when occlusion lands
+            ),
+        )
+    }
+
+    private fun updateRoute(activity: Activity) {
+        // Default route = activity class simple name. tagScreenName()
+        // overrides via setRoute(). Matches UXCam's auto-tagging
+        // behaviour.
+        currentRoute = activity.javaClass.simpleName
+    }
+
+    private companion object {
+        private const val TAG = "ReplaySdk"
+    }
+}

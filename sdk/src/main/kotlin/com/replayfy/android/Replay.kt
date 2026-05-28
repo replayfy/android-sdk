@@ -98,10 +98,10 @@ object Replay {
     // ------------------------------------------------------------------
 
     /** Tag the current screen with a name. Manual override for the
-     *  auto-tagger (which uses Activity / Fragment class names). */
+     *  auto-tagger (which uses Activity class names by default). */
     @JvmStatic
     fun tagScreenName(name: String) {
-        ReplayCore.stub("tagScreenName($name)")
+        ReplayCore.setRoute(name)
     }
 
     /** Mark a view as privacy-sensitive — its contents won't appear

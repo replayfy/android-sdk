@@ -12,7 +12,9 @@ in place but the recording engine ships in follow-up commits:
 - ✅ OkHttp batch sender (POST `/v1/replay/batch`)
 - ✅ Custom event tracking (`Replay.track`)
 - ✅ Identify (`Replay.identify`)
-- ⏳ Tap tracker — per-View OnTouchListener replacement
+- ✅ Tap tracker — per-View OnTouchListener wrap, WindowManagerGlobal
+  walk catches dialogs/popups, widget classification + value extraction
+- ✅ Manual screen tagging (`Replay.tagScreenName`)
 - ⏳ Snapshot pipeline — PixelCopy + Legacy Canvas fallback
 - ⏳ Persistent upload queue — WorkManager when app is dead
 - ⏳ Network capture — OkHttp Interceptor

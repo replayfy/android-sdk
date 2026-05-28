@@ -88,6 +88,39 @@ internal data class CustomEventData(
 )
 
 /**
+ * Bounds in screen-relative pixels. Player positions tap markers /
+ * snapshot nodes against these directly.
+ */
+internal data class TapBounds(
+    val x: Int, val y: Int, val w: Int, val h: Int,
+)
+
+/** Tap location in screen-relative pixels. */
+internal data class TapPoint(
+    val x: Int, val y: Int,
+)
+
+/**
+ * One captured tap. Shape mirrors the `tap` event in
+ * @replay/replay-schema and the schema docs in
+ * replay-web-sdk/docs/native-snapshot-format.md.
+ *
+ * `uiType` is the wire-format string ("button", "field", "text",
+ * "image", "compound", "container", "unknown") — kept as a String
+ * here rather than an enum so JSON serialization is trivial.
+ */
+internal data class TapEventData(
+    val bounds: TapBounds,
+    val point: TapPoint,
+    val route: String,
+    val uiClass: String,
+    val uiType: String,
+    val uiValue: String,
+    val uiId: String,
+    val isSensitive: Boolean,
+)
+
+/**
  * Identify payload — shipped out-of-band on the request body alongside
  * the envelope, not as a timeline event. Matches the web SDK's
  * BatchSender.setIdentify pattern.
