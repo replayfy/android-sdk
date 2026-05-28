@@ -59,6 +59,7 @@ internal object ReplayCore {
     @Volatile private var lifecycleObserver: SessionLifecycleObserver? = null
     @Volatile private var tapTracker: TapTracker? = null
     @Volatile private var snapshotCapture: SnapshotCapture? = null
+    @Volatile private var perfMetrics: com.replayfy.android.internal.perf.PerfMetricsManager? = null
 
     /** Whole-SDK coroutine scope. Cancelled on [stop]. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -123,6 +124,18 @@ internal object ReplayCore {
                 tracker.onScreenResumed = { snapshot.captureNow("screen_appeared") }
                 tracker.onTapEmitted = { snapshot.scheduleIdle() }
                 snapshotCapture = snapshot
+
+                // Native perf metrics — cold_start_ms,
+                // frame_drop_pct, frozen_frame_count, memory_rss_mb,
+                // thermal_state. Cold start emits separately from
+                // onAppForegrounded so we capture cold-launch →
+                // user-sees-app delay, not just process spin-up.
+                val perf = com.replayfy.android.internal.perf.PerfMetricsManager(
+                    context = app,
+                    onMetric = ::emitPerformance,
+                )
+                perf.start()
+                perfMetrics = perf
             } catch (t: Throwable) {
                 android.util.Log.w(TAG, "TapTracker attach failed: ${t.message}")
             }
@@ -225,6 +238,10 @@ internal object ReplayCore {
         if (runtime != null) return
         val rt = startNewSession()
         emitSessionStart(rt)
+        // Cold-start measurement — emit once per process. Idempotent
+        // (returns null after the first call), so subsequent
+        // foregrounds don't re-emit.
+        perfMetrics?.reportFirstForeground()
     }
 
     private fun onAppBackgrounded() {
@@ -246,6 +263,12 @@ internal object ReplayCore {
         flushJob?.cancel()
         flushJob = null
         runtime = null
+        // Stop background perf collectors — Choreographer callback,
+        // memory timer, thermal listener. Restarts when ReplayCore
+        // re-initialises (which doesn't happen in v1 but the
+        // teardown discipline is correct).
+        perfMetrics?.stop()
+        perfMetrics = null
     }
 
     // -----------------------------------------------------------------
@@ -260,6 +283,11 @@ internal object ReplayCore {
     private fun emitSnapshot(snapshot: NativeSnapshotEventData) {
         val rt = runtime ?: return
         push(rt, type = "native_snapshot", data = snapshot)
+    }
+
+    private fun emitPerformance(perf: PerformanceEventData) {
+        val rt = runtime ?: return
+        push(rt, type = "performance", data = perf)
     }
 
     /** Manual screen tag override. Called by Replay.tagScreenName.

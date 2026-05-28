@@ -182,6 +182,23 @@ internal data class NativeSnapshotEventData(
 )
 
 /**
+ * Performance event — same `kind: "perf"` envelope the web SDK
+ * emits. Backend's countEvents switch dispatches on `metric`.
+ *
+ * Metric names defined in
+ * replay-web-sdk/docs/mobile-vitals-matrix.md. Backend has columns
+ * for: cold_start_ms, frame_drop_pct (×100 int), frozen_frame_count,
+ * memory_rss_mb, thermal_state, etc.
+ */
+internal data class PerformanceEventData(
+    val kind: String, // "perf"
+    val metric: String,
+    val value: Double,
+    val unit: String, // "ms" | "mb" | "pct" | "count" | ""
+    val rating: String?, // "good" | "needs-improvement" | "poor"
+)
+
+/**
  * Identify payload — shipped out-of-band on the request body alongside
  * the envelope, not as a timeline event. Matches the web SDK's
  * BatchSender.setIdentify pattern.
