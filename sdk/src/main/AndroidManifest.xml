@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application>
+
+        <!--
+            Zero-config bootstrap. Android instantiates every declared
+            ContentProvider during app startup, BEFORE Application.onCreate
+            fires. By registering our provider in this library manifest,
+            we capture the Application instance and wire up lifecycle
+            hooks without the host app having to call any init code in
+            their Application class. Same pattern AndroidX Startup, Firebase,
+            and UXCam use.
+
+            The `authorities` substitutes ${applicationId} at manifest
+            merge time, guaranteeing a unique authority per host app —
+            two apps with our SDK installed on the same device don't
+            collide.
+        -->
+        <provider
+            android:name="com.replayfy.android.internal.ReplayContentProvider"
+            android:authorities="${applicationId}.replayprovider"
+            android:exported="false"
+            android:initOrder="100" />
+
+    </application>
+
+</manifest>

@@ -1,0 +1,29 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+gradle-app.setting
+.gradletasknamecache
+
+# IntelliJ / Android Studio
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+local.properties
+
+# Captured outputs
+captures/
+*.hprof
+
+# macOS
+.DS_Store
+
+# Kotlin
+.kotlin/
+
+# Secrets
+*.keystore
+*.jks
+!debug.keystore
