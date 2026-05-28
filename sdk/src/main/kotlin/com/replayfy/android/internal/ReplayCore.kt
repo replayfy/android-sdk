@@ -60,6 +60,7 @@ internal object ReplayCore {
     @Volatile private var tapTracker: TapTracker? = null
     @Volatile private var snapshotCapture: SnapshotCapture? = null
     @Volatile private var perfMetrics: com.replayfy.android.internal.perf.PerfMetricsManager? = null
+    @Volatile private var crashHandler: com.replayfy.android.internal.crash.CrashHandler? = null
 
     /** Whole-SDK coroutine scope. Cancelled on [stop]. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -136,6 +137,23 @@ internal object ReplayCore {
                 )
                 perf.start()
                 perfMetrics = perf
+
+                // Crash handler — install EARLY so we catch
+                // exceptions thrown during Application.onCreate /
+                // first-activity-onCreate (the most crash-prone
+                // moments in a session). Drain-on-install also
+                // recovers crashes from the previous process before
+                // anything else runs. The handler is config-
+                // independent (writes to disk regardless); if the
+                // recovered record arrives before runtime is ready,
+                // it's queued in pendingCrash and flushed on first
+                // session start.
+                val crash = com.replayfy.android.internal.crash.CrashHandler(
+                    context = app,
+                    onRecoveredCrash = ::onRecoveredCrash,
+                )
+                crash.install()
+                crashHandler = crash
             } catch (t: Throwable) {
                 android.util.Log.w(TAG, "TapTracker attach failed: ${t.message}")
             }
@@ -290,6 +308,38 @@ internal object ReplayCore {
         push(rt, type = "performance", data = perf)
     }
 
+    /** Recovered previous-launch crashes pending emission. Populated
+     *  in autoBootstrap (which runs before any session exists) and
+     *  drained in [emitSessionStart]. Synchronized; one-shot per
+     *  install — typically ≤ 1 entry. */
+    private val pendingCrashes = mutableListOf<com.replayfy.android.internal.crash.CrashRecord>()
+    private val pendingCrashesLock = Any()
+
+    /** Surface a previous-launch crash as an `error` event on the
+     *  current session. If no session exists yet (callback fires
+     *  during autoBootstrap, before first foreground), queue and
+     *  flush on session start. */
+    private fun onRecoveredCrash(record: com.replayfy.android.internal.crash.CrashRecord) {
+        val rt = runtime
+        if (rt == null) {
+            synchronized(pendingCrashesLock) { pendingCrashes.add(record) }
+            return
+        }
+        pushCrash(rt, record)
+    }
+
+    private fun pushCrash(
+        rt: SessionRuntime,
+        record: com.replayfy.android.internal.crash.CrashRecord,
+    ) {
+        val data = CrashEventData(
+            kind = "crash",
+            message = "${record.className}: ${record.message}".take(400),
+            stack = record.stack.ifBlank { null },
+        )
+        push(rt, type = "error", data = data)
+    }
+
     /** Manual screen tag override. Called by Replay.tagScreenName.
      *  Also triggers an immediate snapshot so the dashboard shows
      *  the tagged screen with its new identity. */
@@ -329,6 +379,14 @@ internal object ReplayCore {
             referrer = "",
         )
         push(rt, type = "session_start", data = data)
+        // Flush any crashes recovered during autoBootstrap (before
+        // the runtime existed). One push per pending record — they
+        // ride along in the first batch.
+        val toFlush = synchronized(pendingCrashesLock) {
+            if (pendingCrashes.isEmpty()) emptyList()
+            else pendingCrashes.toList().also { pendingCrashes.clear() }
+        }
+        for (record in toFlush) pushCrash(rt, record)
     }
 
     private fun emitSessionEnd(rt: SessionRuntime, reason: String) {

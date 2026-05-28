@@ -182,6 +182,22 @@ internal data class NativeSnapshotEventData(
 )
 
 /**
+ * Crash event — emitted on next launch after a previous-process
+ * crash. Ships as the standard `error` event type so the backend's
+ * existing errorCount counter increments correctly; the `kind`
+ * field discriminates from regular runtime errors ("error",
+ * "unhandledrejection") and lets the dashboard filter to crashes
+ * specifically.
+ */
+internal data class CrashEventData(
+    val kind: String,     // "crash"
+    val message: String,  // throwable class + message
+    val stack: String?,   // throwable.stackTraceToString() — Android's JVM
+                          // stack traces are already readable; no
+                          // symbolication step needed
+)
+
+/**
  * Performance event — same `kind: "perf"` envelope the web SDK
  * emits. Backend's countEvents switch dispatches on `metric`.
  *
