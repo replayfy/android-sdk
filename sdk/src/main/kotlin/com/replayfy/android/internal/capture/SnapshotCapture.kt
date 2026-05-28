@@ -49,6 +49,19 @@ internal class SnapshotCapture(
     @Volatile
     var assetUploader: AssetUploader? = null
 
+    /** Posts the first bitmap of each session as the dashboard
+     *  Recordings-list thumbnail. Reset by ReplayCore on each new
+     *  session. */
+    @Volatile
+    var thumbnailUploader: ThumbnailUploader? = null
+
+    /** Provides the current session's publicId — needed by the
+     *  thumbnail endpoint. Snapshot-time lookup so we always use
+     *  the live session id (background→foreground rotations
+     *  would otherwise stamp the previous session). */
+    @Volatile
+    var sessionIdProvider: (() -> String?)? = null
+
     /** Reflects [com.replayfy.android.ReplayConfig.captureSnapshotPixels].
      *  False until config lands or when remote config flips it off. */
     @Volatile
@@ -121,10 +134,22 @@ internal class SnapshotCapture(
             }
 
             // Snapshot the property locals before going async — the
-            // `var` could change between launch + body execution.
+            // `var`s could change between launch + body execution.
             val uploader = assetUploader
+            val thumbUploader = thumbnailUploader
+            val sessionId = sessionIdProvider?.invoke()
             backgroundScope.launch {
-                val asset = BitmapCapture.encodeAndHash(bitmap) // recycles bitmap
+                // Thumbnail FIRST — it borrows the bitmap (makes its
+                // own scaled copy internally), doesn't recycle. The
+                // method is sync; we just don't await its result.
+                // No-op after the first send per session.
+                if (thumbUploader != null && sessionId != null) {
+                    thumbUploader.sendIfFirst(bitmap, sessionId)
+                }
+                // Now hand bitmap to encodeAndHash, which DOES
+                // recycle. Order matters — calling thumbnail after
+                // encodeAndHash would dereference a recycled bitmap.
+                val asset = BitmapCapture.encodeAndHash(bitmap)
                 val imageRef = if (asset != null && uploader != null) {
                     uploader.uploadOrCached(asset)
                 } else null

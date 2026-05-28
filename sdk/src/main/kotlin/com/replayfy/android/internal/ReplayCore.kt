@@ -10,6 +10,7 @@ import com.replayfy.android.BuildConfig
 import com.replayfy.android.ReplayConfig
 import com.replayfy.android.internal.capture.AssetUploader
 import com.replayfy.android.internal.capture.SnapshotCapture
+import com.replayfy.android.internal.capture.ThumbnailUploader
 import com.replayfy.android.internal.tracker.TapTracker
 import com.replayfy.android.internal.upload.BatchUploader
 import kotlinx.coroutines.CoroutineScope
@@ -186,12 +187,17 @@ internal object ReplayCore {
         }
 
         // Now that we have an apiKey + apiHost, the snapshot pipeline
-        // can upload bitmap assets. Wire the uploader + the
-        // pixels-capture flag (defaults true; remote config may
-        // flip it off later).
+        // can upload bitmap assets. Wire the uploader + thumbnail
+        // uploader + the pixels-capture flag (defaults true; remote
+        // config may flip it off later).
         snapshotCapture?.let { snap ->
             snap.assetUploader = AssetUploader(cfg)
+            snap.thumbnailUploader = ThumbnailUploader(cfg)
             snap.captureBitmaps = cfg.captureSnapshotPixels
+            // Provide current sessionId at snapshot time — ensures
+            // the thumbnail upload targets the live session even
+            // after background→foreground rotations.
+            snap.sessionIdProvider = { runtime?.sessionId }
         }
 
         // Build the runtime + emit the session_start event for the
@@ -369,6 +375,10 @@ internal object ReplayCore {
             deviceContext = buildPageContext(ctx),
         )
         runtime = rt
+        // Reset the once-per-session thumbnail flag so the new
+        // session's first snapshot fires a fresh upload (not
+        // skipped by the previous session's flag).
+        snapshotCapture?.thumbnailUploader?.reset()
         return rt
     }
 
