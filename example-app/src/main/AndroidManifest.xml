@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Example-app manifest. Internet permission is required so the SDK's
+  upload pipeline can POST batches to the ingest endpoint we point
+  at via ReplayConfig.ingestUrl (10.0.2.2:3001 on the emulator =
+  the host machine).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="false"
+        android:label="Replay Smoke Test"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar"
+        android:usesCleartextTraffic="true">
+        <!--
+            usesCleartextTraffic=true is ONLY for the emulator-on-host
+            scenario (ingestUrl is http://10.0.2.2:3001). Production
+            apps must keep this false and use https://.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

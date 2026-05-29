@@ -27,3 +27,7 @@ include(":sdk")
 // apps don't need to depend on this module; it adds nothing at
 // runtime when unused.
 include(":sdk-compose")
+// Smoke-test app — not published. Validates the SDK end-to-end on
+// the emulator: taps, snapshots (incl. SurfaceView for PixelCopy
+// parity), privacy occlusion, and the ANR watchdog.
+include(":example-app")

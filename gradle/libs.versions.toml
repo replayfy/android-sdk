@@ -34,4 +34,7 @@ compose-ui = { group = "androidx.compose.ui", name = "ui" }
 
 [plugins]
 android-library = { id = "com.android.library", version.ref = "agp" }
+# Used only by :example-app — produces the .apk we sideload onto the
+# emulator for smoke-testing the SDK end-to-end.
+android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
