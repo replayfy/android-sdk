@@ -167,4 +167,39 @@ object Replay {
     fun cancelSession() {
         ReplayCore.stub("cancelSession")
     }
+
+    /**
+     * Bridge customer-side logging into Replay's console-event stream.
+     *
+     * Android's `android.util.Log` is unreadable from user processes
+     * (READ_LOGS is platform-only), so customers using Log.d/i/w/e
+     * directly can't have those captured automatically. This method
+     * is the one-line wiring point for any logging framework:
+     *
+     *   // Timber
+     *   Timber.plant(object : Timber.Tree() {
+     *     override fun log(p: Int, t: String?, m: String, e: Throwable?) {
+     *       val level = when (p) {
+     *         Log.ERROR, Log.ASSERT -> "error"
+     *         Log.WARN              -> "warn"
+     *         Log.INFO              -> "info"
+     *         Log.DEBUG             -> "debug"
+     *         else                  -> "log"
+     *       }
+     *       Replay.log(level, m, e?.stackTraceToString())
+     *     }
+     *   })
+     *
+     * `System.out` / `System.err` (println, print) are captured
+     * automatically when `captureConsole = true` in [ReplayConfig].
+     *
+     * @param level "log" | "info" | "warn" | "error" | "debug"
+     * @param message  Free-text log line.
+     * @param stack    Optional stack trace string (for exception logs).
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun log(level: String, message: String, stack: String? = null) {
+        ReplayCore.logExplicit(level = level, message = message, stack = stack)
+    }
 }

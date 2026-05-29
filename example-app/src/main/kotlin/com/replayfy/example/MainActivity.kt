@@ -78,6 +78,27 @@ class MainActivity : AppCompatActivity() {
         )
         Log.i(TAG, "Replay.init dispatched — see ReplaySdk-tagged logs from here")
 
+        // identify + track validation — exercise the public-API
+        // surface in the example app so the smoke test proves both
+        // round-trip to the dashboard. identify happens once at
+        // launch; track fires on every tap (see button handler).
+        Replay.identify(
+            distinctId = "smoke-test-android-user",
+            properties = mapOf(
+                "plan" to "free",
+                "device_class" to "test-emulator",
+            ),
+        )
+        Replay.track(
+            name = "example_app_launched",
+            properties = mapOf("platform" to "android"),
+        )
+        // Console capture validation — println goes through STDOUT
+        // (which ConsoleCapture intercepts). Log.i is also captured
+        // when the customer uses Replay.log() bridge.
+        println("[smoke-test] stdout println captured by ConsoleCapture")
+        Replay.log("warn", "[smoke-test] explicit Replay.log(\"warn\") call")
+
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 96, 48, 48)
@@ -97,6 +118,14 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener {
                     tapCount++
                     tapLabel.text = "Taps recorded: $tapCount"
+                    // Fire a track event per click so the dashboard's
+                    // event timeline has something custom to filter
+                    // on.
+                    Replay.track(
+                        name = "tap_me_clicked",
+                        properties = mapOf("count" to tapCount),
+                    )
+                    Replay.log("info", "[smoke-test] tap_me_clicked count=$tapCount")
                 }
             },
         )

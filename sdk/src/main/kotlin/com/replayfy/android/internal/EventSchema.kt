@@ -204,6 +204,22 @@ internal data class NetworkEventData(
 )
 
 /**
+ * Console log event — same shape as the web SDK's ConsoleEventData
+ * so the dashboard Console panel renders both platforms uniformly.
+ *
+ * `args` is a stringified list for native (vs the web SDK's typed
+ * unknown[]) because Kotlin can't safely round-trip arbitrary
+ * platform types through JSON. The dashboard treats both the same
+ * way — string concat into the message column.
+ */
+internal data class ConsoleEventData(
+    val level: String, // "log" | "info" | "warn" | "error" | "debug"
+    val message: String,
+    val args: List<String> = emptyList(),
+    val stack: String? = null,
+)
+
+/**
  * Crash event — emitted on next launch after a previous-process
  * crash. Ships as the standard `error` event type so the backend's
  * existing errorCount counter increments correctly; the `kind`

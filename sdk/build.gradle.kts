@@ -1,6 +1,11 @@
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
+    // Publishing — generates a Maven AAR + POM. Signing is added by the
+    // signing plugin which only activates when the maintainer has GPG
+    // keys configured (see gradle.properties templated keys).
+    `maven-publish`
+    signing
 }
 
 android {
@@ -44,6 +49,111 @@ android {
     sourceSets {
         getByName("main") {
             kotlin.srcDirs("src/main/kotlin")
+        }
+    }
+
+    // Publish a `release` AAR component. AGP 7.1+ enables this via
+    // `singleVariant("release") { withSourcesJar(); withJavadocJar() }`
+    // which is what Maven Central requires (sources jar + javadoc jar
+    // are mandatory for OSSRH publication).
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+            withJavadocJar()
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Maven Central publication
+// -----------------------------------------------------------------------
+// To publish a release:
+//   1. Set OSSRH credentials in ~/.gradle/gradle.properties:
+//        ossrhUsername=<sonatype username>
+//        ossrhPassword=<sonatype token>
+//        signing.keyId=<8-char hex>
+//        signing.password=<gpg passphrase>
+//        signing.secretKeyRingFile=/Users/you/.gnupg/secring.gpg
+//   2. ./gradlew :sdk:publishReleasePublicationToOSSRHRepository
+//   3. Log into https://s01.oss.sonatype.org → close + release the
+//      staging repo. (CI can automate this via the nexus-publish
+//      plugin in a follow-up.)
+//
+// Coordinates: com.replayfy:android-sdk:0.0.1
+afterEvaluate {
+    publishing {
+        publications {
+            create<MavenPublication>("release") {
+                from(components["release"])
+                groupId    = "com.replayfy"
+                artifactId = "android-sdk"
+                version    = "0.0.1"
+                pom {
+                    name.set("Replay Android SDK")
+                    description.set(
+                        "Replayfy session replay + analytics for Android. " +
+                            "Captures session replays (view-tree + PixelCopy bitmaps), " +
+                            "taps, network requests, crashes, performance metrics " +
+                            "(cold start, frame drops, ANR, memory, thermal), and " +
+                            "console output.",
+                    )
+                    url.set("https://replayfy.io")
+                    licenses {
+                        license {
+                            name.set("MIT")
+                            url.set("https://opensource.org/licenses/MIT")
+                            distribution.set("repo")
+                        }
+                    }
+                    developers {
+                        developer {
+                            id.set("iamnasirudeen")
+                            name.set("Nasirudeen Olohundare")
+                            email.set("iamnasirudeen@gmail.com")
+                        }
+                    }
+                    scm {
+                        connection.set("scm:git:git://github.com/replayfy/android-sdk.git")
+                        developerConnection.set("scm:git:ssh://github.com/replayfy/android-sdk.git")
+                        url.set("https://github.com/replayfy/android-sdk")
+                    }
+                }
+            }
+        }
+        repositories {
+            maven {
+                name = "OSSRH"
+                val releasesRepoUrl =
+                    "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
+                val snapshotsRepoUrl =
+                    "https://s01.oss.sonatype.org/content/repositories/snapshots/"
+                url = uri(
+                    if (version.toString().endsWith("SNAPSHOT")) snapshotsRepoUrl
+                    else releasesRepoUrl,
+                )
+                credentials {
+                    username = (project.findProperty("ossrhUsername") as String?)
+                        ?: System.getenv("OSSRH_USERNAME")
+                                ?: ""
+                    password = (project.findProperty("ossrhPassword") as String?)
+                        ?: System.getenv("OSSRH_PASSWORD")
+                                ?: ""
+                }
+            }
+        }
+    }
+
+    // Sign only when keys are configured. CI without GPG can skip
+    // signing (Maven Central won't accept the artifact, but local
+    // builds + Sonatype snapshots still work).
+    signing {
+        val signingKey = (project.findProperty("signing.key") as String?)
+            ?: System.getenv("SIGNING_KEY")
+        val signingPassword = (project.findProperty("signing.password") as String?)
+            ?: System.getenv("SIGNING_PASSWORD")
+        if (signingKey != null && signingPassword != null) {
+            useInMemoryPgpKeys(signingKey, signingPassword)
+            sign(publishing.publications)
         }
     }
 }

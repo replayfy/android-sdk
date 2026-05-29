@@ -62,6 +62,7 @@ internal object ReplayCore {
     @Volatile private var snapshotCapture: SnapshotCapture? = null
     @Volatile private var perfMetrics: com.replayfy.android.internal.perf.PerfMetricsManager? = null
     @Volatile private var crashHandler: com.replayfy.android.internal.crash.CrashHandler? = null
+    @Volatile private var consoleCapture: com.replayfy.android.internal.console.ConsoleCapture? = null
 
     /** Whole-SDK coroutine scope. Cancelled on [stop]. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -155,6 +156,26 @@ internal object ReplayCore {
                 )
                 crash.install()
                 crashHandler = crash
+
+                // Console capture — intercept System.out / System.err
+                // for stdout/stderr-routed logging (println,
+                // System.out.println, Timber-to-stdout configs).
+                // Starts UNCONDITIONALLY in autoBootstrap so logs from
+                // the host app's Application.onCreate land before
+                // Replay.init runs. init() turns it off if
+                // captureConsole=false on the supplied config.
+                //
+                // The public Replay.log() API bridges customer-side
+                // loggers (Timber, kotlin-logging) that don't route
+                // through stdout — android.util.Log is unreadable from
+                // user processes (READ_LOGS is platform-only post-
+                // Jelly-Bean), so explicit wiring is the only path
+                // for those frameworks.
+                val console = com.replayfy.android.internal.console.ConsoleCapture(
+                    emit = ::emitConsole,
+                )
+                console.start()
+                consoleCapture = console
             } catch (t: Throwable) {
                 android.util.Log.w(TAG, "TapTracker attach failed: ${t.message}")
             }
@@ -184,6 +205,15 @@ internal object ReplayCore {
 
         if (cfg.distinctId != null) {
             newSender.identity = IdentifyPayload(distinctId = cfg.distinctId)
+        }
+
+        // Honor the customer's captureConsole opt-out. The collector
+        // started UNCONDITIONALLY in autoBootstrap (so pre-init logs
+        // aren't lost) gets stopped here when the customer disabled
+        // it via config.
+        if (!cfg.captureConsole) {
+            consoleCapture?.stop()
+            consoleCapture = null
         }
 
         // Now that we have an apiKey + apiHost, the snapshot pipeline
@@ -300,6 +330,11 @@ internal object ReplayCore {
         // teardown discipline is correct).
         perfMetrics?.stop()
         perfMetrics = null
+        // Restore original System.out / System.err. Idempotent —
+        // safe to call when consoleCapture was never started (when
+        // captureConsole=false).
+        consoleCapture?.stop()
+        consoleCapture = null
         // Clear the network-interceptor emit closure so any
         // in-flight OkHttp calls' interceptor doesn't push into
         // the stopped runtime. The customer's interceptor instance
@@ -331,6 +366,17 @@ internal object ReplayCore {
     private fun emitNetwork(event: NetworkEventData) {
         val rt = runtime ?: return
         push(rt, type = "network", data = event)
+    }
+
+    private fun emitConsole(event: ConsoleEventData) {
+        val rt = runtime ?: return
+        push(rt, type = "console", data = event)
+    }
+
+    /** Public-API entry for explicit console logging — called by
+     *  [com.replayfy.android.Replay.log] after the SDK is initialised. */
+    fun logExplicit(level: String, message: String, stack: String?) {
+        consoleCapture?.emitExplicit(level = level, message = message, stack = stack)
     }
 
     /** Recovered previous-launch crashes pending emission. Populated
