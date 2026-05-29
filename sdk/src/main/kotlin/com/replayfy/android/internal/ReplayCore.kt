@@ -230,6 +230,11 @@ internal object ReplayCore {
             snap.sessionIdProvider = { runtime?.sessionId }
         }
 
+        // Honor the autoScreenName opt-out. Default-true; flipping
+        // off means TapTracker.onActivityResumed no longer mutates
+        // the route — only explicit Replay.tagScreenName() does.
+        tapTracker?.autoScreenNameEnabled = cfg.autoScreenName
+
         // Network capture wire — the Interceptor itself is exposed
         // via Replay.networkInterceptor() for the customer to add to
         // their OkHttpClient. Here we just wire the emit + config

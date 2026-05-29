@@ -61,4 +61,16 @@ data class ReplayConfig(
      * lower bandwidth.
      */
     val captureSnapshotPixels: Boolean = true,
+
+    /**
+     * Auto-detect the current screen from each Activity resume
+     * (route becomes `activity.javaClass.simpleName`). When false,
+     * the SDK only sets a route when the customer calls
+     * [com.replayfy.android.Replay.tagScreenName] explicitly.
+     *
+     * Mirrors iOS's same-named flag (default-on). Apps that name
+     * activities cryptically (`MainActivity`, `Fragment2`) often
+     * disable this and tag manually for clearer dashboard rows.
+     */
+    val autoScreenName: Boolean = true,
 )

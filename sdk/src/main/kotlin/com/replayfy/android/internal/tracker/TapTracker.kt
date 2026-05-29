@@ -278,10 +278,21 @@ internal class TapTracker(
     @Volatile
     var onTapEmitted: (() -> Unit)? = null
 
+    /** When false, [onActivityResumed] skips the auto route-update
+     *  step — only explicit [Replay.tagScreenName] calls move the
+     *  route. Wired from [ReplayConfig.autoScreenName]. Defaults to
+     *  true so the default-config flow continues to auto-tag. */
+    @Volatile
+    var autoScreenNameEnabled: Boolean = true
+
     private fun updateRoute(activity: Activity) {
         // Default route = activity class simple name. tagScreenName()
         // overrides via setRoute(). Matches UXCam's auto-tagging
-        // behaviour.
+        // behaviour. Opt-out: customers who tag manually set
+        // ReplayConfig(autoScreenName=false) — then this method is
+        // a no-op and the route stays whatever the last
+        // tagScreenName() set it to.
+        if (!autoScreenNameEnabled) return
         currentRoute = activity.javaClass.simpleName
     }
 
