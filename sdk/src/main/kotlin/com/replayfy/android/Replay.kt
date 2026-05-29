@@ -211,6 +211,28 @@ object Replay {
     }
 
     /**
+     * Paint the diagonal-stripe overlay over a set of [Rect] regions
+     * on the NEXT snapshot only. Entry point for cross-platform
+     * SDK bridges (React Native, Flutter) whose components don't
+     * have native [View] references — the bridge calculates rects
+     * on the JS / Dart side (RN `measureInWindow`, Flutter
+     * `RenderBox.localToGlobal`) and hands them here in
+     * root-relative pixel coords.
+     *
+     * One-shot: the rects clear once a snapshot fires. Bridges
+     * call this every frame (or before any capture they want
+     * occluded). Calling it twice without a snapshot in between
+     * REPLACES the prior set rather than appending.
+     *
+     * Mirrors UXCam's `occludeRectsOnNextFrame(rects)`.
+     */
+    @JvmStatic
+    fun occludeRectsOnNextFrame(rects: List<android.graphics.Rect>) {
+        com.replayfy.android.internal.privacy.PrivacyRegistry
+            .setPendingFrameRects(rects)
+    }
+
+    /**
      * Attach a sticky property to the END USER (persists across
      * sessions, attached to the EndUser row server-side). Distinct
      * from [track] event properties which only attach to a single

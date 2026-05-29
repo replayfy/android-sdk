@@ -64,6 +64,44 @@ internal object PrivacyRegistry {
     @Volatile var occludeAllTextViews: Boolean = false
     @Volatile var occludeAllScreen: Boolean = false
 
+    // -----------------------------------------------------------------
+    //  Pending one-shot rects (RN / Flutter bridges)
+    // -----------------------------------------------------------------
+    //
+    // React Native + Flutter components don't have a native View we
+    // can register via add(view). The cross-platform bridge passes
+    // raw root-relative rects (calculated on the JS / Dart side via
+    // measureInWindow / RenderBox.localToGlobal) and asks the SDK to
+    // paint over them on the NEXT captured frame.
+    //
+    // One-shot semantics: BitmapCapture drains the list on every
+    // snapshot. Bridges call setPendingFrameRects(...) every frame
+    // before triggering a snapshot; if no snapshot fires the rects
+    // stay buffered until the next capture (no leakage — they get
+    // overwritten by the next setPendingFrameRects call).
+
+    private val pendingRectsLock = Any()
+    private var pendingFrameRects: List<Rect> = emptyList()
+
+    /** Bridge entry point — set the rects to paint on the next
+     *  snapshot. Replaces (does not append to) any prior pending set. */
+    fun setPendingFrameRects(rects: List<Rect>) {
+        synchronized(pendingRectsLock) {
+            pendingFrameRects = rects.toList() // defensive copy
+        }
+    }
+
+    /** Snapshot + clear atomically so we never paint the same rect
+     *  twice (e.g. if two snapshots fire back-to-back). Called by
+     *  BitmapCapture once per capture. */
+    fun consumePendingFrameRects(): List<Rect> {
+        return synchronized(pendingRectsLock) {
+            val snapshot = pendingFrameRects
+            pendingFrameRects = emptyList()
+            snapshot
+        }
+    }
+
     /** Mark a view as sensitive. Idempotent — adding the same view
      *  twice is a no-op. */
     fun add(view: View) {

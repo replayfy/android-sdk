@@ -86,14 +86,22 @@ internal object BitmapCapture {
             // entire root. Hides absolutely everything regardless
             // of class-based opt-ins.
             if (PrivacyRegistry.occludeAllScreen) {
+                // Drain pending bridge rects even on full-screen path
+                // so they don't carry into the NEXT (non-full-screen)
+                // snapshot. Result discarded.
+                PrivacyRegistry.consumePendingFrameRects()
                 listOf(android.graphics.Rect(0, 0, root.width, root.height))
             } else {
                 // Combine explicit per-view marks + Compose-marker
                 // bounds + bulk class-based bounds (TextView /
-                // EditText when occludeAllText* flags are set).
+                // EditText when occludeAllText* flags are set) +
+                // one-shot bridge-supplied rects (RN / Flutter) —
+                // consumed here so back-to-back snapshots don't
+                // double-paint.
                 PrivacyRegistry.sensitiveBounds(root) +
                     PrivacyRegistry.composeBoundsRelativeTo(root) +
-                    PrivacyRegistry.bulkBounds(root)
+                    PrivacyRegistry.bulkBounds(root) +
+                    PrivacyRegistry.consumePendingFrameRects()
             }
         } catch (t: Throwable) {
             // Privacy lookup should never throw, but soft-fail
