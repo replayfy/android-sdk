@@ -169,6 +169,78 @@ object Replay {
     }
 
     /**
+     * Occlude every [android.widget.EditText] in the host app
+     * regardless of whether it's been explicitly registered via
+     * [addPrivacyView]. Useful default-on PII protection when the
+     * app routinely handles sensitive input.
+     *
+     * Mirrors UXCam's `occludeAllTextFields(boolean)`.
+     */
+    @JvmStatic
+    fun occludeAllTextFields(occlude: Boolean) {
+        com.replayfy.android.internal.privacy.PrivacyRegistry
+            .occludeAllTextFields = occlude
+    }
+
+    /**
+     * Occlude every [android.widget.TextView] (and subclasses like
+     * [android.widget.Button]) — anything that displays text.
+     *
+     * Mirrors UXCam's `occludeAllTextView()`. Boolean variant +
+     * one-line "redact ALL text" toggle.
+     */
+    @JvmStatic
+    fun occludeAllTextView(occlude: Boolean = true) {
+        com.replayfy.android.internal.privacy.PrivacyRegistry
+            .occludeAllTextViews = occlude
+    }
+
+    /**
+     * Paint over the ENTIRE captured snapshot with the diagonal-
+     * stripe occlusion overlay. Nuclear option for screens where
+     * the customer doesn't want ANY pixel data to leave the device
+     * (e.g. health records, banking pin pad).
+     *
+     * Mirrors UXCam's `occludeSensitiveScreen(boolean)`. Set false
+     * to restore normal capture.
+     */
+    @JvmStatic
+    fun occludeSensitiveScreen(occlude: Boolean) {
+        com.replayfy.android.internal.privacy.PrivacyRegistry
+            .occludeAllScreen = occlude
+    }
+
+    /**
+     * Attach a sticky property to the END USER (persists across
+     * sessions, attached to the EndUser row server-side). Distinct
+     * from [track] event properties which only attach to a single
+     * event.
+     *
+     * Mirrors UXCam's `setUserProperty(key, value)` per-primitive
+     * overloads — Kotlin's [Any?] subsumes all of them.
+     *
+     * Common use: `setUserProperty("plan", "pro")`,
+     * `setUserProperty("signupSource", "google_ads")`.
+     */
+    @JvmStatic
+    fun setUserProperty(key: String, value: Any?) {
+        ReplayCore.setUserProperty(key, value)
+    }
+
+    /**
+     * Attach a sticky property to the CURRENT SESSION. Visible on
+     * the dashboard as a Session-level field (rendered as a chip
+     * on the player header — dashboard wiring is a separate task).
+     *
+     * Use for ephemeral per-session context: `setSessionProperty("ab_variant", "B")`,
+     * `setSessionProperty("checkout_step", "shipping")`.
+     */
+    @JvmStatic
+    fun setSessionProperty(key: String, value: Any?) {
+        ReplayCore.setSessionProperty(key, value)
+    }
+
+    /**
      * Bridge customer-side logging into Replay's console-event stream.
      *
      * Android's `android.util.Log` is unreadable from user processes

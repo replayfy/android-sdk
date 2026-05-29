@@ -312,6 +312,62 @@ internal object ReplayCore {
     }
 
     // -----------------------------------------------------------------
+    //  setUserProperty / setSessionProperty — UXCam-parity API
+    // -----------------------------------------------------------------
+    //
+    // UXCam ships setUserProperty(key, value) + setSessionProperty(key,
+    // value) as STICKY props (vs `track()` properties which only
+    // attach to that one event). User props ride on EndUser.customProps
+    // via the identity payload that's re-shipped with every batch.
+    // Session props ride as custom events with kind="session_property"
+    // — dashboard rendering as filterable Session columns is a
+    // follow-up (see docs/sdk-capture-matrix.md §Dashboard items).
+    //
+    // Both methods accept Any? for value to match Kotlin/Java idioms
+    // (String, Int, Double, Boolean, null all serializable via
+    // JSONObject). UXCam has overloads per primitive type; Kotlin
+    // doesn't need them.
+
+    /** Local merged user-property store. Sent in every IdentifyPayload
+     *  so re-batches carry the latest set. Thread-safe via the lock
+     *  below — callers may invoke from any thread. */
+    private val userProps = mutableMapOf<String, Any?>()
+    private val userPropsLock = Any()
+
+    fun setUserProperty(key: String, value: Any?) {
+        if (key.isBlank()) return
+        synchronized(userPropsLock) { userProps[key.take(80)] = value }
+        // Re-send identify so the backend's upsertEndUser sees the
+        // updated customProps on the next batch. Identity may be
+        // null (no identify() call yet) — in that case the props
+        // sit in our local map and ship when identify() is first
+        // called.
+        val s = sender ?: return
+        val current = s.identity ?: return
+        s.identity = current.copy(
+            customProps = synchronized(userPropsLock) { userProps.toMap() },
+        )
+    }
+
+    /** Local merged session-property store. Emitted as a single
+     *  `session_property` custom event per call so the timeline
+     *  preserves the order + values the customer set. */
+    fun setSessionProperty(key: String, value: Any?) {
+        val rt = runtime ?: run {
+            android.util.Log.w(TAG, "setSessionProperty before session — dropping '$key'")
+            return
+        }
+        if (key.isBlank()) return
+        val safeKey = key.trim().take(80)
+        val data = CustomEventData(
+            kind = "session_property",
+            name = safeKey,
+            properties = safeProps(mapOf(safeKey to value)),
+        )
+        push(rt, type = "custom", data = data)
+    }
+
+    // -----------------------------------------------------------------
     //  Lifecycle
     // -----------------------------------------------------------------
 

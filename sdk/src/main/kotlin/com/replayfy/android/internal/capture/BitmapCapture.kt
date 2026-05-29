@@ -81,8 +81,20 @@ internal object BitmapCapture {
         // dispatch. The pipeline's callback may land on a background
         // thread where View walking is unsafe.
         val privacyRects = try {
-            PrivacyRegistry.sensitiveBounds(root) +
-                PrivacyRegistry.composeBoundsRelativeTo(root)
+            // Whole-screen-occlude opt-in (UXCam-parity): replace
+            // the per-view rect set with a single rect covering the
+            // entire root. Hides absolutely everything regardless
+            // of class-based opt-ins.
+            if (PrivacyRegistry.occludeAllScreen) {
+                listOf(android.graphics.Rect(0, 0, root.width, root.height))
+            } else {
+                // Combine explicit per-view marks + Compose-marker
+                // bounds + bulk class-based bounds (TextView /
+                // EditText when occludeAllText* flags are set).
+                PrivacyRegistry.sensitiveBounds(root) +
+                    PrivacyRegistry.composeBoundsRelativeTo(root) +
+                    PrivacyRegistry.bulkBounds(root)
+            }
         } catch (t: Throwable) {
             // Privacy lookup should never throw, but soft-fail
             // rather than killing the whole capture.

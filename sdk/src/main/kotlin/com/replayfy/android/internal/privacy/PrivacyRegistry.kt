@@ -42,6 +42,28 @@ internal object PrivacyRegistry {
         Collections.synchronizedMap(WeakHashMap())
     private val lock = Any()
 
+    // -----------------------------------------------------------------
+    //  Bulk-privacy flags (UXCam parity)
+    // -----------------------------------------------------------------
+    //
+    // UXCam ships three opt-in switches that occlude broad classes of
+    // views without per-view registration:
+    //
+    //   occludeAllTextFields  → every EditText is treated as sensitive
+    //                           (input fields the user types into)
+    //   occludeAllTextViews   → every TextView (and subclasses like
+    //                           Button, EditText) is treated as sensitive
+    //                           (anything that DISPLAYS text)
+    //   occludeAllScreen      → whole captured snapshot is painted over
+    //                           with the diagonal-stripe overlay
+    //
+    // Flags are checked in isSensitive() + BitmapCapture's overlay
+    // pass; setting them mid-session takes effect on the NEXT snapshot.
+
+    @Volatile var occludeAllTextFields: Boolean = false
+    @Volatile var occludeAllTextViews: Boolean = false
+    @Volatile var occludeAllScreen: Boolean = false
+
     /** Mark a view as sensitive. Idempotent — adding the same view
      *  twice is a no-op. */
     fun add(view: View) {
@@ -61,6 +83,17 @@ internal object PrivacyRegistry {
      * method row) and expects every descendant to inherit the mark.
      */
     fun isSensitive(view: View): Boolean = synchronized(lock) {
+        // Whole-screen overlay → every view is sensitive. Cheap
+        // short-circuit before the per-view checks.
+        if (occludeAllScreen) return true
+        // Bulk class-based occlusion. EditText extends TextView, so
+        // the textViews check ALSO catches input fields; the
+        // textFields flag is the narrower opt-in for cases where
+        // the customer wants to hide ONLY user-typed content
+        // (passwords, credit cards) without redacting labels +
+        // buttons.
+        if (occludeAllTextFields && view is android.widget.EditText) return true
+        if (occludeAllTextViews && view is android.widget.TextView) return true
         if (table.containsKey(view)) return true
         var parent = view.parent
         while (parent != null) {
@@ -68,6 +101,66 @@ internal object PrivacyRegistry {
             parent = parent.parent
         }
         return false
+    }
+
+    /**
+     * Enumerate ALL views in the [root] tree whose class matches a
+     * currently-enabled bulk-privacy flag (EditText if
+     * `occludeAllTextFields`, TextView if `occludeAllTextViews`).
+     * Used by BitmapCapture to paint stripe overlays over the
+     * matching regions in the captured bitmap.
+     *
+     * Walks the tree once; cost is O(views-in-tree) per snapshot
+     * which is the same order as ViewTreeSerializer's tree-walk
+     * (negligible vs the bitmap-encode cost). Skipped entirely
+     * when neither flag is set — zero overhead for customers not
+     * using bulk privacy.
+     */
+    fun bulkBounds(root: View): List<Rect> {
+        val wantFields = occludeAllTextFields
+        val wantViews = occludeAllTextViews
+        if (!wantFields && !wantViews) return emptyList()
+        val out = ArrayList<Rect>()
+        val rootLoc = IntArray(2).also { root.getLocationOnScreen(it) }
+        walkBulk(root, rootLoc, wantFields, wantViews, out)
+        return out
+    }
+
+    private fun walkBulk(
+        view: View,
+        rootLoc: IntArray,
+        wantFields: Boolean,
+        wantViews: Boolean,
+        out: MutableList<Rect>,
+    ) {
+        if (!view.isShown || view.width <= 0 || view.height <= 0) return
+        val matches = (wantFields && view is android.widget.EditText) ||
+            // EditText extends TextView; if the customer enabled
+            // both flags we'd add the same rect twice. The wantFields
+            // branch handles EditText; wantViews picks up the rest.
+            (wantViews && view is android.widget.TextView &&
+                view !is android.widget.EditText)
+        if (matches) {
+            val loc = IntArray(2).also { view.getLocationOnScreen(it) }
+            out.add(
+                Rect(
+                    loc[0] - rootLoc[0],
+                    loc[1] - rootLoc[1],
+                    loc[0] - rootLoc[0] + view.width,
+                    loc[1] - rootLoc[1] + view.height,
+                ),
+            )
+            // Don't recurse — text widgets don't contain other
+            // text widgets meaningfully, and stopping here keeps
+            // the bounds list small.
+            return
+        }
+        if (view is android.view.ViewGroup) {
+            for (i in 0 until view.childCount) {
+                val child = view.getChildAt(i) ?: continue
+                walkBulk(child, rootLoc, wantFields, wantViews, out)
+            }
+        }
     }
 
     /**
