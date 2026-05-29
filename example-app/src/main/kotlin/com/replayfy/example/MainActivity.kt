@@ -4,14 +4,18 @@ import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Shader
+import android.graphics.SurfaceTexture
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.TextureView
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.replayfy.android.Replay
@@ -20,35 +24,36 @@ import com.replayfy.android.ReplayConfig
 /**
  * End-to-end smoke-test screen for the Replay Android SDK.
  *
- * Boots the SDK in onCreate (zero-config bootstrap also auto-fires
- * via ReplayContentProvider, but explicit Replay.start ensures the
- * config we want — including ingestUrl pointing at the host machine
- * — actually lands).
+ * Validation surfaces:
  *
- * The screen exposes four validation surfaces:
+ *   1. "Tap me" button — fires TapEvents the SDK records.
  *
- *   1. "Tap me" buttons — fires TapEvents the SDK records.
- *      Logcat should show "tap recorded" entries.
+ *   2. SurfaceView #1 (MAGENTA→CYAN→YELLOW gradient) — proves the
+ *      per-SurfaceView PixelCopy composite captures hardware-
+ *      composited content. With the bare Window PixelCopy path, the
+ *      region would render as transparent (hole-punched).
  *
- *   2. SurfaceView gradient — proves PixelCopy is wired. With the
- *      Legacy capture path, the SurfaceView region would render as
- *      solid black in the captured PNG. With PixelCopy, the gradient
- *      shows up. The dashboard's session player renders both paths
- *      via the same imageRef, so this is a visual diff.
+ *   3. SurfaceView #2 (RED→GREEN→BLUE gradient) — marked with
+ *      Replay.addPrivacyView. The captured PNG should show the
+ *      diagonal-stripe occlusion overlay OVER the gradient region,
+ *      proving the privacy overlay sits on top of the PixelCopy
+ *      result.
  *
- *   3. "Trigger ANR" button — blocks main with Thread.sleep(7s).
- *      The AnrWatchdog should detect it within ~5s (its default
- *      threshold) and emit an anr_ms perf event. Logcat shows the
- *      captured main-thread stack.
+ *   4. TextureView (ORANGE→PURPLE→TEAL gradient) — TextureView
+ *      renders into the View tree's main surface via the texture
+ *      pipeline, so the bare Window PixelCopy SHOULD capture it
+ *      without needing per-View extras. This validates that path.
  *
- *   4. Privacy field — wrapped with Replay.addPrivacyView so its
- *      content never reaches the dashboard. Captured snapshot
- *      shows the diagonal-stripe occlusion overlay over the field;
- *      taps inside the field ship as isSensitive=true with
- *      metadata blanked.
+ *   5. "Trigger ANR" button — blocks main with SystemClock.sleep(7s).
+ *      The AnrWatchdog should detect within ~5s and emit anr_ms.
+ *
+ *   6. EditText marked sensitive — taps + snapshot occlude content.
+ *
+ * Wrapped in a ScrollView so everything fits on Pixel 6-class screens
+ * without losing the bottom widgets.
  *
  * Watch the SDK via:
- *   adb logcat -s ReplaySdk:V *:S
+ *   adb logcat -s ReplaySdk:V ReplayExample:V *:S
  */
 class MainActivity : AppCompatActivity() {
 
@@ -58,11 +63,9 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // SDK boot. ingestUrl points at host machine's loopback as
-        // seen from the emulator — `10.0.2.2` is the emulator-NAT
-        // alias for 127.0.0.1 on the host. The api key is a literal
-        // string; the host's ingest service should accept any key
-        // in dev mode.
+        // SDK boot. apiHost points at host machine's loopback as seen
+        // from the emulator — `10.0.2.2` is the emulator-NAT alias
+        // for 127.0.0.1 on the host.
         Replay.init(
             this,
             ReplayConfig(
@@ -73,7 +76,7 @@ class MainActivity : AppCompatActivity() {
         )
         Log.i(TAG, "Replay.init dispatched — see ReplaySdk-tagged logs from here")
 
-        val root = LinearLayout(this).apply {
+        val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 96, 48, 48)
         }
@@ -83,9 +86,9 @@ class MainActivity : AppCompatActivity() {
             text = "Taps recorded: 0"
             textSize = 18f
         }
-        root.addView(tapLabel)
+        column.addView(tapLabel)
 
-        root.addView(
+        column.addView(
             Button(this).apply {
                 text = "Tap me (normal button)"
                 id = android.R.id.button1
@@ -96,24 +99,62 @@ class MainActivity : AppCompatActivity() {
             },
         )
 
-        // --- 2. SurfaceView gradient (PixelCopy validator) -------
-        root.addView(
+        // --- 2. SurfaceView #1: should be captured ---------------
+        column.addView(
             TextView(this).apply {
-                text = "Gradient below is a SurfaceView — PixelCopy should capture it; Legacy would paint it black:"
+                text = "SurfaceView #1 (MAGENTA→CYAN→YELLOW) — should appear in the captured PNG"
                 setPadding(0, 32, 0, 8)
             },
         )
-        root.addView(
-            GradientSurfaceView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    240,
-                )
+        column.addView(
+            GradientSurfaceView(
+                this,
+                intArrayOf(Color.MAGENTA, Color.CYAN, Color.YELLOW),
+            ).apply {
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 180)
             },
         )
 
-        // --- 3. ANR trigger --------------------------------------
-        root.addView(
+        // --- 3. SurfaceView #2: should be occluded ---------------
+        column.addView(
+            TextView(this).apply {
+                text = "SurfaceView #2 (RED→GREEN→BLUE) — marked sensitive, should show diagonal-stripe overlay"
+                setPadding(0, 32, 0, 8)
+            },
+        )
+        val occludedSurface = GradientSurfaceView(
+            this,
+            intArrayOf(Color.RED, Color.GREEN, Color.BLUE),
+        ).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 180)
+        }
+        column.addView(occludedSurface)
+        // Mark sensitive AFTER the view is in the tree so the
+        // registry's ancestor-walk lookup actually reaches it.
+        Replay.addPrivacyView(occludedSurface)
+
+        // --- 4. TextureView (separate render path) ---------------
+        column.addView(
+            TextView(this).apply {
+                text = "TextureView (ORANGE→PURPLE→TEAL) — bare Window PixelCopy should already see this"
+                setPadding(0, 32, 0, 8)
+            },
+        )
+        column.addView(
+            GradientTextureView(
+                this,
+                intArrayOf(
+                    Color.argb(255, 255, 165, 0),    // orange
+                    Color.argb(255, 138, 43, 226),   // blue-violet (acts as purple)
+                    Color.argb(255, 0, 128, 128),    // teal
+                ),
+            ).apply {
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 180)
+            },
+        )
+
+        // --- 5. ANR trigger --------------------------------------
+        column.addView(
             Button(this).apply {
                 text = "Trigger ANR (sleeps main 7s — watchdog should flag at ~5s)"
                 setOnClickListener {
@@ -124,8 +165,8 @@ class MainActivity : AppCompatActivity() {
             },
         )
 
-        // --- 4. Privacy field ------------------------------------
-        root.addView(
+        // --- 6. Privacy text field -------------------------------
+        column.addView(
             TextView(this).apply {
                 text = "This field is marked sensitive — taps + snapshots should occlude it:"
                 setPadding(0, 32, 0, 8)
@@ -134,24 +175,26 @@ class MainActivity : AppCompatActivity() {
         val secret = EditText(this).apply {
             hint = "Pretend this is a credit card #"
         }
-        root.addView(secret)
-        // Mark sensitive AFTER the view is in the tree so the
-        // registry's ancestor-walk lookup actually reaches it. (The
-        // PrivacyRegistry holds a WeakReference; the host LinearLayout
-        // keeps the EditText alive for the activity's lifetime.)
+        column.addView(secret)
         Replay.addPrivacyView(secret)
 
-        setContentView(root)
+        // ScrollView root so multi-SurfaceView + TextureView all fit
+        // even on shorter screens / when Pixel 6 emulator has system
+        // bars eating into the visible area.
+        val scroll = ScrollView(this).apply { addView(column) }
+        setContentView(scroll)
     }
 
     /**
-     * A SurfaceView painted with a diagonal gradient. Lives on the
-     * hardware compositor — invisible to view.draw(Canvas), visible
-     * to PixelCopy. The whole point of including this in the smoke
-     * test is to prove the new capture pipeline actually sees it.
+     * SurfaceView painted with a diagonal gradient. Lives on the
+     * hardware compositor — invisible to view.draw(Canvas), invisible
+     * to bare Window PixelCopy (hole-punched), visible only via
+     * PixelCopy.request(SurfaceView, ...).
      */
-    private class GradientSurfaceView(context: android.content.Context) :
-        SurfaceView(context), SurfaceHolder.Callback {
+    private class GradientSurfaceView(
+        context: android.content.Context,
+        private val colors: IntArray,
+    ) : SurfaceView(context), SurfaceHolder.Callback {
 
         init { holder.addCallback(this) }
 
@@ -162,7 +205,7 @@ class MainActivity : AppCompatActivity() {
                     shader = LinearGradient(
                         0f, 0f,
                         canvas.width.toFloat(), canvas.height.toFloat(),
-                        intArrayOf(Color.MAGENTA, Color.CYAN, Color.YELLOW),
+                        colors,
                         null,
                         Shader.TileMode.CLAMP,
                     )
@@ -174,6 +217,44 @@ class MainActivity : AppCompatActivity() {
         }
         override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) {}
         override fun surfaceDestroyed(holder: SurfaceHolder) {}
+    }
+
+    /**
+     * TextureView painted with a diagonal gradient. TextureView
+     * differs from SurfaceView: its content renders into a hardware
+     * texture that gets composited into the parent View's surface,
+     * so the bare Window PixelCopy SHOULD capture it without any
+     * per-view fallback. This widget exists to PROVE that.
+     */
+    private class GradientTextureView(
+        context: android.content.Context,
+        private val colors: IntArray,
+    ) : TextureView(context), TextureView.SurfaceTextureListener {
+
+        init { surfaceTextureListener = this }
+
+        override fun onSurfaceTextureAvailable(surface: SurfaceTexture, w: Int, h: Int) {
+            val sfc = Surface(surface)
+            try {
+                val canvas = sfc.lockCanvas(null) ?: return
+                try {
+                    val paint = Paint().apply {
+                        shader = LinearGradient(
+                            0f, 0f, w.toFloat(), h.toFloat(),
+                            colors, null, Shader.TileMode.CLAMP,
+                        )
+                    }
+                    canvas.drawPaint(paint)
+                } finally {
+                    sfc.unlockCanvasAndPost(canvas)
+                }
+            } finally {
+                sfc.release()
+            }
+        }
+        override fun onSurfaceTextureSizeChanged(s: SurfaceTexture, w: Int, h: Int) {}
+        override fun onSurfaceTextureDestroyed(s: SurfaceTexture): Boolean = true
+        override fun onSurfaceTextureUpdated(s: SurfaceTexture) {}
     }
 
     companion object {
