@@ -3,6 +3,7 @@ package com.replayfy.android.internal.capture
 import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
+import android.view.View
 import com.replayfy.android.internal.NativeSnapshotEventData
 import com.replayfy.android.internal.NativeViewNode
 import com.replayfy.android.internal.tracker.WindowRootDiscovery
@@ -99,8 +100,17 @@ internal class SnapshotCapture(
     }
 
     /**
-     * Main-thread phase: capture tree + bitmap synchronously, hand
-     * off to background for encode + upload + emit.
+     * Main-thread phase: walk the View tree, then kick off the
+     * pluggable capture pipeline. The pipeline returns asynchronously
+     * (the PixelCopy path callbacks on a background HandlerThread);
+     * the [BitmapCapture.captureAsync] callback handles the
+     * background-side encode + upload + emit.
+     *
+     * Tree walk runs FIRST so the tree and the bitmap reflect the
+     * same frame as closely as possible. PixelCopy may pick up the
+     * NEXT vsync's framebuffer, which means a one-frame mismatch is
+     * possible during heavy scrolls. UXCam exhibits the same
+     * behavior — acceptable given the alternative is black surfaces.
      */
     private fun doCapture(trigger: String) {
         val now = System.currentTimeMillis()
@@ -114,46 +124,69 @@ internal class SnapshotCapture(
             val tree = ViewTreeSerializer.serialize(primary.view) ?: return
             val dm: DisplayMetrics = activity.resources.displayMetrics
 
-            // Bitmap capture is synchronous, must run on main. We do
-            // it BEFORE handing off to background so the view tree
-            // and pixels are from the same frame — otherwise a fast
-            // scroll between tree-walk and bitmap could produce a
-            // snapshot whose nodes don't match the painted pixels.
-            val bitmap = if (captureBitmaps) {
-                BitmapCapture.capture(primary.view, primary.params)
-            } else null
-
             lastSnapshotAtMs = now
 
-            // Hand off to background for encode + upload + emit. If
-            // there's no bitmap (capture disabled or failed), emit
-            // immediately on this thread — no async work needed.
-            if (bitmap == null) {
+            // No pixel capture requested → emit tree-only immediately.
+            if (!captureBitmaps) {
                 emitPayload(tree, primary, dm, trigger, imageRef = null)
                 return
             }
 
-            // Snapshot the property locals before going async — the
-            // `var`s could change between launch + body execution.
+            // Resolve the Window to feed PixelCopy. Only safe to use
+            // the activity's window if the picked root IS the
+            // activity's decor view — otherwise PixelCopy would
+            // capture the wrong source. For dialog / popup roots the
+            // selector falls back to Legacy (which doesn't need a
+            // Window).
+            val activityDecor: View? = try {
+                activity.window?.peekDecorView()
+            } catch (_: Throwable) { null }
+            val window: android.view.Window? =
+                if (activityDecor != null && primary.view === activityDecor) {
+                    activity.window
+                } else null
+
+            // Snapshot property locals before going async — the
+            // `var`s could change between dispatch + callback.
             val uploader = assetUploader
             val thumbUploader = thumbnailUploader
             val sessionId = sessionIdProvider?.invoke()
-            backgroundScope.launch {
-                // Thumbnail FIRST — it borrows the bitmap (makes its
-                // own scaled copy internally), doesn't recycle. The
-                // method is sync; we just don't await its result.
-                // No-op after the first send per session.
-                if (thumbUploader != null && sessionId != null) {
-                    thumbUploader.sendIfFirst(bitmap, sessionId)
+
+            BitmapCapture.captureAsync(
+                root = primary.view,
+                window = window,
+                params = primary.params,
+            ) { bitmap ->
+                // Callback may land on main (Legacy) OR on the
+                // PixelCopy HandlerThread. Either way, hop to IO
+                // for the encode + upload + emit work — encodeAndHash
+                // is CPU + memory heavy.
+                if (bitmap == null) {
+                    // Emit must still happen so the player has a
+                    // wireframe; do it on the same dispatcher we'd
+                    // have used for the asset path for consistency.
+                    backgroundScope.launch {
+                        emitPayload(tree, primary, dm, trigger, imageRef = null)
+                    }
+                    return@captureAsync
                 }
-                // Now hand bitmap to encodeAndHash, which DOES
-                // recycle. Order matters — calling thumbnail after
-                // encodeAndHash would dereference a recycled bitmap.
-                val asset = BitmapCapture.encodeAndHash(bitmap)
-                val imageRef = if (asset != null && uploader != null) {
-                    uploader.uploadOrCached(asset)
-                } else null
-                emitPayload(tree, primary, dm, trigger, imageRef)
+                backgroundScope.launch {
+                    // Thumbnail FIRST — it borrows the bitmap (makes
+                    // its own scaled copy internally), doesn't
+                    // recycle. No-op after the first send per session.
+                    if (thumbUploader != null && sessionId != null) {
+                        thumbUploader.sendIfFirst(bitmap, sessionId)
+                    }
+                    // Now hand bitmap to encodeAndHash, which DOES
+                    // recycle. Order matters — calling thumbnail
+                    // after encodeAndHash would deref a recycled
+                    // bitmap.
+                    val asset = BitmapCapture.encodeAndHash(bitmap)
+                    val imageRef = if (asset != null && uploader != null) {
+                        uploader.uploadOrCached(asset)
+                    } else null
+                    emitPayload(tree, primary, dm, trigger, imageRef)
+                }
             }
         } catch (t: Throwable) {
             android.util.Log.w(TAG, "snapshot failed: ${t.message}")

@@ -4,115 +4,123 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.view.View
+import android.view.Window
 import android.view.WindowManager
+import com.replayfy.android.internal.privacy.PrivacyRegistry
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 
 /**
- * Best-effort whole-screen bitmap capture. Single strategy in v1
- * (Legacy View.draw on a Canvas-backed Bitmap) — runs synchronously
- * on the main thread, no PixelCopy callbacks to coordinate around.
+ * Façade over the pluggable [CapturePipeline] strategies. Picks a
+ * pipeline via [CapturePipelineSelector], runs it, paints the
+ * privacy overlay over the result, and hands the Bitmap to the
+ * caller via callback.
  *
- * Limitations vs the modern PixelCopy path (follow-up commit):
- *   • Cannot capture SurfaceView / TextureView / VideoView content
- *     (those are hardware-composited; only PixelCopy sees the
- *     surface). Such regions appear as black or the parent's
- *     background.
- *   • Runs on main thread — for very large windows this can drop
- *     a frame. Mitigated by the downsampling step below.
+ * Why a façade — async + privacy must coordinate:
+ *   - Pipelines vary in threading. Legacy returns synchronously on
+ *     the calling thread; PixelCopy returns asynchronously on a
+ *     background HandlerThread.
+ *   - Privacy rects MUST be computed on the main thread BEFORE
+ *     dispatch (View.getLocationOnScreen / isShown / width / height
+ *     are only safe to read from main).
+ *   - The painted overlay MUST be applied AFTER the pipeline writes
+ *     pixels (otherwise the view-draw or PixelCopy result paints
+ *     over our overlay).
  *
- * What it does:
- *   1. Allocate an ARGB_8888 Bitmap sized to the root view (capped
- *      at MAX_DIMENSION on the longest edge for memory + upload
- *      size — most native UIs render fine at 1024 px wide).
- *   2. Wrap it in a Canvas, optionally scale.
- *   3. Pre-paint with the background color if the window has
- *      FLAG_DIM_BEHIND set (so playback shows the dim correctly
- *      under dialogs).
- *   4. Call view.draw(canvas) — the same painting code Android
- *      uses for every frame.
- *   5. Return the Bitmap to the caller.
+ * Flow:
+ *   1. (caller thread, main) Compute privacy rects + capture scale
+ *      against the live View tree.
+ *   2. (caller thread) Dispatch the pipeline.
+ *   3. (callback thread, may be background) Apply privacy overlay
+ *      to the returned Bitmap, then invoke [onResult].
+ *
+ * The overlay step uses [Canvas] on the Bitmap — safe off-main
+ * because the Bitmap is OUR allocation and no one else holds a
+ * reference to it.
+ *
+ * [encodeAndHash] remains synchronous + must be called on background
+ * — it allocates a large byte[] + runs SHA-256.
  */
 internal object BitmapCapture {
 
-    /** Cap on the longest edge of the captured bitmap. Above this we
-     *  downsample at capture time, before painting — cheaper than
-     *  drawing full-res and scaling after. */
+    /** Cap on the longest edge of the captured bitmap. Pipelines
+     *  apply the same cap internally; we mirror it here so the
+     *  privacy-overlay canvas matches what the pipeline produced. */
     private const val MAX_DIMENSION = 1024
 
-    /** PNG compression quality. PNG is lossless so the parameter is
-     *  only the encoder's effort level (0..100); 90 = good balance. */
+    /** PNG compression effort (0..100). 90 = good size/quality balance. */
     private const val PNG_QUALITY = 90
 
-    /** Returns null when the view has no measured size (not yet
-     *  laid out) or capture failed. */
-    fun capture(
+    private const val TAG = "ReplaySdk"
+
+    /**
+     * Capture pixels asynchronously through the selected pipeline,
+     * paint the privacy overlay, then invoke [onResult].
+     *
+     * @param root      Root View whose pixels to capture.
+     * @param window    Hosting [Window], when known. Pass
+     *                  `activity.window` for activity decor roots;
+     *                  null for dialog / popup roots whose Window we
+     *                  cannot reach (forces Legacy).
+     * @param params    LayoutParams of the root window — pipelines
+     *                  use it to honor FLAG_SECURE + FLAG_DIM_BEHIND.
+     * @param onResult  Receives the captured + occlusion-painted
+     *                  Bitmap, or null on any failure. May fire on a
+     *                  background thread; receiver takes ownership
+     *                  of recycling.
+     */
+    fun captureAsync(
         root: View,
-        params: WindowManager.LayoutParams? = null,
-    ): Bitmap? {
-        if (root.width <= 0 || root.height <= 0) return null
-        // Skip secure windows entirely — they contain content the OS
-        // explicitly forbids capturing (banking app pin pads,
-        // DRM-protected video, etc.). Same flag the OS itself
-        // enforces against MediaProjection.
-        if (params != null && (params.flags and WindowManager.LayoutParams.FLAG_SECURE) != 0) {
-            return null
-        }
+        window: Window?,
+        params: WindowManager.LayoutParams?,
+        onResult: (Bitmap?) -> Unit,
+    ) {
+        if (root.width <= 0 || root.height <= 0) { onResult(null); return }
 
-        val scale = computeScale(root.width, root.height)
-        val w = (root.width * scale).toInt().coerceAtLeast(1)
-        val h = (root.height * scale).toInt().coerceAtLeast(1)
-
-        val bitmap = try {
-            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        } catch (oom: OutOfMemoryError) {
-            // Soft-fail rather than crashing the host app. Snapshot
-            // ships as tree-only this frame.
-            android.util.Log.w(TAG, "OOM allocating ${w}x${h} bitmap")
-            return null
-        }
-
-        val canvas = Canvas(bitmap)
-        if (scale != 1f) canvas.scale(scale, scale)
-
-        // FLAG_DIM_BEHIND honored: pre-paint a black overlay at the
-        // window's dimAmount so dialogs+dim show in playback
-        // (matches what the user sees on screen).
-        if (params != null && (params.flags and WindowManager.LayoutParams.FLAG_DIM_BEHIND) != 0) {
-            val alpha = (255 * params.dimAmount).toInt().coerceIn(0, 255)
-            canvas.drawARGB(alpha, 0, 0, 0)
-        }
-
-        // Collect privacy-view bounds BEFORE drawing so they're
-        // computed against the live view hierarchy on the main
-        // thread. The paint pass below runs in the same scope so
-        // the rects are still valid.
-        // Combine View-marker rects (addPrivacyView) + Compose-marker
-        // rects (Modifier.replayOcclude). Both render with the same
-        // diagonal-stripe overlay below.
-        val privacyRects =
-            com.replayfy.android.internal.privacy.PrivacyRegistry
-                .sensitiveBounds(root) +
-                com.replayfy.android.internal.privacy.PrivacyRegistry
-                    .composeBoundsRelativeTo(root)
-
-        return try {
-            root.draw(canvas)
-            // Paint a noise-pattern overlay over each privacy view's
-            // bounds AFTER view.draw so it sits on top of the captured
-            // pixels. The overlay only ever exists in the saved
-            // bitmap — never visible on the user's screen.
-            if (privacyRects.isNotEmpty()) {
-                paintPrivacyOverlay(canvas, privacyRects)
-            }
-            bitmap
+        // Compute privacy rects + scale on main BEFORE pipeline
+        // dispatch. The pipeline's callback may land on a background
+        // thread where View walking is unsafe.
+        val privacyRects = try {
+            PrivacyRegistry.sensitiveBounds(root) +
+                PrivacyRegistry.composeBoundsRelativeTo(root)
         } catch (t: Throwable) {
-            // View painting can throw (custom Views with bugs, OEM
-            // quirks). Recycle + bail rather than crashing.
-            android.util.Log.w(TAG, "view.draw failed: ${t.message}")
-            bitmap.recycle()
-            null
+            // Privacy lookup should never throw, but soft-fail
+            // rather than killing the whole capture.
+            android.util.Log.w(TAG, "privacy lookup failed: ${t.message}")
+            emptyList()
         }
+        val scale = computeScale(root.width, root.height)
+
+        val pipeline = CapturePipelineSelector.selectFor(window)
+        pipeline.capture(root, window, params) { bitmap ->
+            if (bitmap == null) { onResult(null); return@capture }
+            if (privacyRects.isNotEmpty()) {
+                try {
+                    // New Canvas has no transform. Apply the same
+                    // scale the pipeline used internally so the rects
+                    // (in root-pixel coords) land at the correct
+                    // location in the (possibly downscaled) Bitmap.
+                    val canvas = Canvas(bitmap)
+                    if (scale != 1f) canvas.scale(scale, scale)
+                    paintPrivacyOverlay(canvas, privacyRects)
+                } catch (t: Throwable) {
+                    android.util.Log.w(TAG, "overlay paint failed: ${t.message}")
+                    // Pixels are still good for non-sensitive
+                    // regions; ship them rather than dropping the
+                    // whole frame. Revisit if leakage is reported.
+                }
+            }
+            onResult(bitmap)
+        }
+    }
+
+    /** Synchronous Legacy-only capture path. Kept for debug /
+     *  tooling that can't do async. DO NOT use for production
+     *  snapshots — bypasses PixelCopy, so video / maps / camera
+     *  render black. */
+    @Suppress("unused")
+    fun captureLegacy(root: View, params: WindowManager.LayoutParams?): Bitmap? {
+        return LegacyCapturePipeline().captureSync(root, params)
     }
 
     /** Diagonal-stripe pattern over privacy regions. Cheaper than a
@@ -120,22 +128,22 @@ internal object BitmapCapture {
      *  in playback — viewers immediately recognise the "this region
      *  was hidden" signal. Mirrors the iOS implementation. */
     private fun paintPrivacyOverlay(
-        canvas: android.graphics.Canvas,
+        canvas: Canvas,
         rects: List<android.graphics.Rect>,
     ) {
         val fill = android.graphics.Paint().apply {
-            color = android.graphics.Color.argb(255, 38, 38, 38)
+            color = Color.argb(255, 38, 38, 38)
             style = android.graphics.Paint.Style.FILL
         }
         val stripe = android.graphics.Paint().apply {
-            color = android.graphics.Color.argb(255, 89, 89, 89)
+            color = Color.argb(255, 89, 89, 89)
             style = android.graphics.Paint.Style.STROKE
             strokeWidth = 2f
         }
         val spacing = 8f
         for (rect in rects) {
-            // Solid dark base so any pixel that leaked through draw()
-            // is overwritten.
+            // Solid dark base so any pixel that leaked through the
+            // pipeline is overwritten.
             canvas.drawRect(rect, fill)
             // Diagonal stripes at 45° spaced 8px apart. Clip to the
             // rect so strokes don't bleed.
@@ -210,8 +218,6 @@ internal object BitmapCapture {
         '0', '1', '2', '3', '4', '5', '6', '7',
         '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
     )
-
-    private const val TAG = "ReplaySdk"
 
     /** Output of [encodeAndHash] — bytes + the SHA-256 hex hash +
      *  MIME for the asset upload endpoint. */
