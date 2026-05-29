@@ -240,6 +240,95 @@ object Replay {
         ReplayCore.setSessionProperty(key, value)
     }
 
+    // ------------------------------------------------------------------
+    //  UXCam-parity session-control surface
+    // ------------------------------------------------------------------
+
+    /**
+     * Toggle the auto-Activity tagger on/off at runtime. Default-on
+     * via [ReplayConfig.autoScreenName]; flip to false to drive
+     * routes manually via [tagScreenName] for a flow where Activity
+     * class names don't map cleanly to user-meaningful screens.
+     *
+     * Mirrors UXCam's `setAutomaticScreenNameTagging(boolean)`.
+     */
+    @JvmStatic
+    fun setAutomaticScreenNameTagging(enabled: Boolean) {
+        ReplayCore.setAutomaticScreenNameTagging(enabled)
+    }
+
+    /**
+     * Attach the device's push-notification token to the session.
+     * `platform` defaults to "fcm"; pass "huawei" if you're piping
+     * a HMS token. Dashboard wiring (chip on player header) is
+     * tracked separately.
+     *
+     * Mirrors UXCam's `setPushNotificationToken(token)`.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun setPushNotificationToken(token: String, platform: String = "fcm") {
+        ReplayCore.setPushNotificationToken(token, platform)
+    }
+
+    /**
+     * Flag the current session as a favorite so it surfaces in the
+     * "starred sessions" filter on the dashboard. One-shot — call
+     * once per session you want flagged.
+     *
+     * Mirrors UXCam's `markSessionAsFavorite()`.
+     */
+    @JvmStatic
+    fun markSessionAsFavorite() {
+        ReplayCore.markSessionAsFavorite()
+    }
+
+    /**
+     * Attach a SESSION-level tag (with optional properties) for
+     * filtering the session list. Distinct from [track] which is
+     * event-level. Use for "this session is in A/B variant X" or
+     * "this session belongs to the holiday checkout flow".
+     *
+     * Mirrors UXCam's `addTagWithProperties(name, properties)`.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun addTagWithProperties(name: String, properties: Map<String, Any?>? = null) {
+        ReplayCore.addTagWithProperties(name, properties)
+    }
+
+    /**
+     * Force-end the current session + spin up a fresh one. Useful
+     * for logical session boundaries inside one app process —
+     * user logout-then-login, A/B re-bucketing, "start over"
+     * flows. Drains the old session's events first so they don't
+     * bleed into the new one.
+     *
+     * Mirrors UXCam's `startNewSession()`.
+     */
+    @JvmStatic
+    fun startNewSession() {
+        ReplayCore.forceStartNewSession()
+    }
+
+    /**
+     * Stop recording AND block (up to [timeoutMs]) until the
+     * in-memory buffer has been uploaded or persisted to disk.
+     * Call this from a sign-out flow or just before `System.exit`
+     * when you want strong-delivery semantics for the current
+     * session's events. Default 5 000 ms.
+     *
+     * Mirrors UXCam's `stopApplicationAndUploadData(runnable)`. We
+     * expose a blocking wait rather than the callback variant —
+     * the Kotlin coroutine + ExecutorService machinery makes that
+     * equally simple at the call site.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun stopApplicationAndUploadData(timeoutMs: Long = 5_000) {
+        ReplayCore.stopAndUploadSync(timeoutMs)
+    }
+
     /**
      * Bridge customer-side logging into Replay's console-event stream.
      *

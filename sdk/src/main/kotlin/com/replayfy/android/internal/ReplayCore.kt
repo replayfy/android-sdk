@@ -368,6 +368,160 @@ internal object ReplayCore {
     }
 
     // -----------------------------------------------------------------
+    //  UXCam-parity session-control surface
+    // -----------------------------------------------------------------
+
+    /**
+     * Flip the auto-screen-detect Activity-tagger on/off at runtime.
+     * Mirrors [ReplayConfig.autoScreenName] but at the call site
+     * rather than init — customers turn auto-tagging off for a
+     * specific modal flow (where the Activity class names don't map
+     * to user-meaningful screens) and back on when they leave it.
+     *
+     * Mirrors UXCam's `setAutomaticScreenNameTagging(boolean)`.
+     */
+    fun setAutomaticScreenNameTagging(enabled: Boolean) {
+        tapTracker?.autoScreenNameEnabled = enabled
+    }
+
+    /**
+     * Attach the device's push-notification token to the session.
+     * Emitted as a custom event with kind="push_token" so the
+     * dashboard can render it as a chip on the player header AND
+     * use it to deliver push from the replay UI (future feature;
+     * dashboard side tracked in docs/sdk-capture-matrix.md).
+     *
+     * @param platform Defaults to "fcm" on Android; pass "huawei"
+     *                 for HMS Push tokens. Forwarded as-is to the
+     *                 backend so any consumer can filter by it.
+     */
+    @JvmOverloads
+    fun setPushNotificationToken(token: String, platform: String = "fcm") {
+        val rt = runtime ?: run {
+            android.util.Log.w(TAG, "setPushNotificationToken before session — dropping")
+            return
+        }
+        val trimmed = token.trim()
+        if (trimmed.isEmpty()) return
+        // Cap at 256 chars — FCM tokens are ~152, HMS are similar;
+        // anything longer is malformed + we don't want unbounded cost.
+        val safeToken = trimmed.take(256)
+        val data = CustomEventData(
+            kind = "push_token",
+            name = platform,
+            properties = safeProps(mapOf("token" to safeToken, "platform" to platform)),
+        )
+        push(rt, type = "custom", data = data)
+    }
+
+    /**
+     * Flag the current session as a favorite so it surfaces in the
+     * "starred sessions" filter on the dashboard. Emitted as a
+     * `session_favorite` custom event; backend promotes the flag
+     * to Session.favorite when it processes the batch (backend
+     * task tracked in docs).
+     *
+     * Mirrors UXCam's `markSessionAsFavorite()`. One-shot — call
+     * once per session you want flagged.
+     */
+    fun markSessionAsFavorite() {
+        val rt = runtime ?: run {
+            android.util.Log.w(TAG, "markSessionAsFavorite before session — dropping")
+            return
+        }
+        val data = CustomEventData(
+            kind = "session_favorite",
+            name = "favorite",
+            properties = safeProps(mapOf("favorite" to true)),
+        )
+        push(rt, type = "custom", data = data)
+    }
+
+    /**
+     * Attach a SESSION-level tag with optional properties. Distinct
+     * from [track] (event-level): UXCam customers use session tags
+     * for "this session belongs to A/B variant X" or "this session
+     * is part of the holiday-checkout flow" — values that filter the
+     * whole session list rather than show up as timeline events.
+     *
+     * Mirrors UXCam's `addTagWithProperties(name, properties)`. Ships
+     * the same custom-event envelope; kind="session_tag" signals to
+     * the backend that the tag should be promoted into Session.tags
+     * (separate Prisma column — see docs).
+     */
+    @JvmOverloads
+    fun addTagWithProperties(name: String, properties: Map<String, Any?>? = null) {
+        val rt = runtime ?: run {
+            android.util.Log.w(TAG, "addTagWithProperties before session — dropping '$name'")
+            return
+        }
+        if (name.isBlank()) return
+        val safeName = name.trim().take(80)
+        val data = CustomEventData(
+            kind = "session_tag",
+            name = safeName,
+            properties = safeProps(properties),
+        )
+        push(rt, type = "custom", data = data)
+    }
+
+    /**
+     * Force-end the current session + start a fresh one. UXCam's
+     * `startNewSession()` — used by customers who track logical
+     * session boundaries inside one app process (logout-then-login,
+     * A/B re-bucketing, "start over" flows).
+     *
+     * Drains the current session's buffer first so its events don't
+     * bleed into the new session, then spawns a new SessionRuntime
+     * with a new sessionId. Auto-screen-tagger picks up the next
+     * Activity as the new session's first screen.
+     */
+    fun forceStartNewSession() {
+        val rt = runtime
+        if (rt != null) {
+            emitSessionEnd(rt, reason = "manual_new")
+            scope.launch(Dispatchers.IO) { flushNow() }
+        }
+        val newRt = startNewSession()
+        emitSessionStart(newRt)
+    }
+
+    /**
+     * Stop recording AND block (up to [timeoutMs]) until the
+     * in-memory buffer has been uploaded or persisted to disk.
+     * Customers call this from a sign-out flow or just before
+     * `System.exit` when they want strong-delivery semantics for
+     * the current session's events.
+     *
+     * Caps the wait so a wedged network can't hang the host
+     * process. Default 5 000 ms.
+     *
+     * Mirrors UXCam's `stopApplicationAndUploadData(runnable)`. We
+     * expose a blocking wait rather than the callback variant
+     * because the Kotlin coroutine + ExecutorService machinery
+     * makes it equally simple.
+     */
+    @JvmOverloads
+    fun stopAndUploadSync(timeoutMs: Long = 5_000) {
+        val rt = runtime
+        if (rt != null) {
+            emitSessionEnd(rt, reason = "app_terminating")
+            val latch = java.util.concurrent.CountDownLatch(1)
+            scope.launch(Dispatchers.IO) {
+                try { flushNow() } finally { latch.countDown() }
+            }
+            // Cap so a wedged network doesn't hang shutdown.
+            try {
+                latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        // Tear down the rest of the SDK as if stop() had been called.
+        stop()
+    }
+
+    // -----------------------------------------------------------------
     //  Lifecycle
     // -----------------------------------------------------------------
 
