@@ -90,17 +90,19 @@ internal class ThumbnailUploader(
                 .header("x-replay-api-key", config.apiKey)
                 .build()
             client.newCall(request).execute().use { response ->
-                // Backend returns 200 even when R2 is disabled in dev
-                // (response body has ok:false). We don't bother
-                // parsing — best-effort, dashboard falls back to a
-                // blank card if the URL never lands on Session.
-                if (!response.isSuccessful) {
-                    // Server-side rejection → flip flag back so the
-                    // NEXT snapshot retries. Avoids a one-shot loss
-                    // when the customer's API key was momentarily
-                    // invalid (e.g. just-rotated).
-                    alreadySent.set(false)
-                }
+                // Backend returns 200 even on logical failure
+                // (R2 not configured, session row not yet created,
+                // etc.) and embeds the real result in the JSON body.
+                // We parse the body and only consider this "sent"
+                // when ok=true — otherwise flip the flag back so
+                // the next snapshot retries. This is what closes a
+                // common race in dev: the first snapshot can fire
+                // BEFORE the session_start batch has reached the
+                // server, so /thumbnail returns ok:false (session
+                // not found yet). Without retry, the customer never
+                // sees a thumbnail.
+                val ok = response.isSuccessful && responseBodyOk(response)
+                if (!ok) alreadySent.set(false)
             }
         } catch (t: Throwable) {
             // Network error — flip flag back so next snapshot
@@ -145,6 +147,30 @@ internal class ThumbnailUploader(
             if (scaled !== source) {
                 try { scaled.recycle() } catch (_: Throwable) {}
             }
+        }
+    }
+
+    /** Parse the standard ingest envelope `{ok: bool, data: {ok: bool, url?}}`.
+     *  The inner `data.ok` is the authoritative success signal
+     *  for THIS endpoint — outer `ok` only indicates the HTTP
+     *  request was routed successfully. Returns true when the
+     *  endpoint actually stored a thumbnail URL. */
+    private fun responseBodyOk(response: okhttp3.Response): Boolean {
+        val bodyStr = try { response.body?.string() } catch (_: Throwable) { null }
+        if (bodyStr.isNullOrBlank()) return false
+        return try {
+            val outer = JSONObject(bodyStr)
+            // ingest convention: { ok, data: {...}, meta: {...} }
+            val inner = outer.optJSONObject("data")
+            if (inner != null) {
+                inner.optBoolean("ok", false) && !inner.optString("url").isNullOrBlank()
+            } else {
+                // Plain `{ok: bool, url: ...}` shape — also accept.
+                outer.optBoolean("ok", false) && !outer.optString("url").isNullOrBlank()
+            }
+        } catch (_: Throwable) {
+            // Unparseable body = treat as failure so we retry.
+            false
         }
     }
 

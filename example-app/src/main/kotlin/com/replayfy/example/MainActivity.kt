@@ -65,12 +65,14 @@ class MainActivity : AppCompatActivity() {
 
         // SDK boot. apiHost points at host machine's loopback as seen
         // from the emulator — `10.0.2.2` is the emulator-NAT alias
-        // for 127.0.0.1 on the host.
+        // for 127.0.0.1 on the host. Port 4000 is the local
+        // ingest-api; the dashboard runs at :5180 and reads from the
+        // same backing store.
         Replay.init(
             this,
             ReplayConfig(
-                apiKey = "smoke-test-key",
-                apiHost = "http://10.0.2.2:3001",
+                apiKey = "rpl_pk_97f6b1ce7235126b0cc017716e81fe12849e",
+                apiHost = "http://10.0.2.2:4000",
                 captureSnapshotPixels = true,
             ),
         )
