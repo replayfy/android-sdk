@@ -4,12 +4,13 @@ import android.content.Context
 import com.replayfy.android.internal.PerformanceEventData
 
 /**
- * Coordinator for the four perf collectors that ship in v1:
+ * Coordinator for the perf collectors that ship in v1:
  *
  *   • [ColdStartTracker] — one-shot on first foreground
  *   • [FrameRateMonitor] — frame_drop_pct + frozen_frame_count
  *   • [MemoryPoller] — memory_rss_mb every 30s
  *   • [ThermalMonitor] — thermal_state on change + baseline at start
+ *   • [AnrWatchdog]    — anr_ms when main thread blocks ≥5s
  *
  * Each collector calls a shared `emit` closure with
  * `(metric, value, unit, rating?)`. We wrap into the standard
@@ -46,12 +47,35 @@ internal class PerfMetricsManager(
         ))
     }
 
+    private val anr = AnrWatchdog { frozenMs, mainStack ->
+        // Ship duration via PerformanceEventData (rating reflects
+        // severity: 5–10s = needs-improvement, >10s = poor — Google's
+        // Android Vitals thresholds for ANR). The main-thread stack
+        // goes to logcat at WARN for development-time visibility; a
+        // follow-up will plumb it through a richer ANR envelope so
+        // the dashboard can show "main thread was stuck here" the
+        // way Sentry / Firebase do.
+        val rating = when {
+            frozenMs >= 10_000 -> "poor"
+            else -> "needs-improvement"
+        }
+        android.util.Log.w("ReplaySdk", "ANR detected (${frozenMs}ms)\n$mainStack")
+        onMetric(PerformanceEventData(
+            kind = "perf",
+            metric = "anr_ms",
+            value = frozenMs.toDouble(),
+            unit = "ms",
+            rating = rating,
+        ))
+    }
+
     /** Start every collector. Called from [com.replayfy.android.internal.ReplayCore]
      *  init after the session runtime is set up. */
     fun start() {
         frames.start()
         memory.start()
         thermal.start()
+        anr.start()
         // Cold start fires once on first foreground; ReplayCore
         // calls reportFirstForeground from its lifecycle hook so
         // we measure cold-launch → user-sees-app time, not just
@@ -63,6 +87,7 @@ internal class PerfMetricsManager(
         frames.stop()
         memory.stop()
         thermal.stop()
+        anr.stop()
     }
 
     /** Emit the cold-start metric exactly once per process.
