@@ -23,10 +23,38 @@ android {
         buildConfigField("String", "SDK_NAME", "\"@replay/android-sdk\"")
 
         consumerProguardFiles("consumer-rules.pro")
+
+        // ABIs we ship libreplay_crash.so for — 64-bit ARM + x86_64
+        // for emulators. Cover ~99% of active devices; 32-bit ARM
+        // intentionally omitted (Google Play has deprecated 32-bit-
+        // only uploads since 2019). Host apps that need armeabi-v7a
+        // can re-introduce it via their own ndk { abiFilters }.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+
+        // Wire the native signal handler. The .so is loaded lazily
+        // from Kotlin (NativeCrashHandler) — gracefully degrades
+        // when stripped.
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c11"
+                arguments += listOf("-DANDROID_STL=none")
+            }
+        }
     }
 
     buildFeatures {
         buildConfig = true
+    }
+
+    // CMake project for libreplay_crash.so — sigaction handlers for
+    // SIGSEGV / SIGBUS / SIGABRT / SIGFPE / SIGILL / SIGTRAP.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     compileOptions {

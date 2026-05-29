@@ -157,6 +157,28 @@ internal object ReplayCore {
                 crash.install()
                 crashHandler = crash
 
+                // Native-signal handler. Catches SIGSEGV / SIGBUS /
+                // SIGABRT / SIGFPE / SIGILL / SIGTRAP raised by JNI
+                // + NDK code in the host app (game engines, Rust /
+                // C++ libs, OpenGL/Vulkan frameworks) that the JVM
+                // UncaughtExceptionHandler cannot see — by the time
+                // the JVM observes a native crash, the process is
+                // dead. The native handler writes a one-line record
+                // via async-signal-safe syscalls; we drain on next
+                // launch.
+                //
+                // Optional — gracefully no-ops when libreplay_crash.so
+                // wasn't packed (e.g. host app strips native libs
+                // aggressively).
+                try {
+                    com.replayfy.android.internal.crash.NativeCrashHandler(
+                        context = app,
+                        onRecoveredCrash = ::onRecoveredCrash,
+                    ).install()
+                } catch (t: Throwable) {
+                    android.util.Log.w(TAG, "NDK signal handler init failed: ${t.message}")
+                }
+
                 // Console capture — intercept System.out / System.err
                 // for stdout/stderr-routed logging (println,
                 // System.out.println, Timber-to-stdout configs).
