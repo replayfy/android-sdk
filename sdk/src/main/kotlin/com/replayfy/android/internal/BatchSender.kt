@@ -7,7 +7,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
+import java.util.zip.GZIPOutputStream
 
 /**
  * POSTs envelopes to /v1/replay/batch.
@@ -73,14 +75,31 @@ internal class BatchSender(
      */
     fun sendJson(json: String, sdkName: String, sdkVersion: String): Boolean {
         return try {
-            val body = json.toRequestBody(JSON)
-            val request = Request.Builder()
+            // gzip the body before sending. Typical event-mix batches
+            // compress 5-10× — saves bandwidth on cellular + reduces
+            // ingest billable bytes. Express's `json()` middleware
+            // auto-inflates when Content-Encoding: gzip is set
+            // (inflate:true default), so no backend change needed.
+            // UXCam bundles minizip on iOS for the same purpose;
+            // Android they use OkHttp's gzip request interceptor
+            // pattern.
+            //
+            // Tiny payloads (<256 bytes) we send uncompressed — the
+            // gzip header alone is ~20 bytes + dictionary state, so
+            // for very small bodies compression actually inflates.
+            val raw = json.toByteArray(Charsets.UTF_8)
+            val builder = Request.Builder()
                 .url(joinUrl(config.apiHost, "/v1/replay/batch"))
-                .post(body)
                 .header("x-replay-api-key", config.apiKey)
                 .header("user-agent", "$sdkName/$sdkVersion")
-                .build()
-            client.newCall(request).execute().use { response ->
+            if (raw.size >= GZIP_THRESHOLD_BYTES) {
+                val gzipped = gzip(raw)
+                builder.header("content-encoding", "gzip")
+                builder.post(gzipped.toRequestBody(JSON))
+            } else {
+                builder.post(raw.toRequestBody(JSON))
+            }
+            client.newCall(builder.build()).execute().use { response ->
                 response.isSuccessful
             }
         } catch (t: Throwable) {
@@ -216,8 +235,21 @@ internal class BatchSender(
         return h + p
     }
 
+    /** gzip-compress the bytes via java.util.zip (no external dep).
+     *  ByteArrayOutputStream + GZIPOutputStream is the canonical
+     *  pattern + handles the gzip wrapper + checksum automatically. */
+    private fun gzip(input: ByteArray): ByteArray {
+        val baos = ByteArrayOutputStream(input.size / 4)  // optimistic pre-size
+        GZIPOutputStream(baos).use { it.write(input) }
+        return baos.toByteArray()
+    }
+
     companion object {
         private const val TAG = "ReplaySdk"
         private val JSON = "application/json; charset=utf-8".toMediaType()
+        /** Below this size, gzip overhead (20+ bytes header + dict
+         *  state) outweighs the compression win — send raw. Most
+         *  session_start-only batches are well above this. */
+        private const val GZIP_THRESHOLD_BYTES = 256
     }
 }
