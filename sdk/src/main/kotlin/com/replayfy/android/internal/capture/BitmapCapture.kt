@@ -87,9 +87,14 @@ internal object BitmapCapture {
         // computed against the live view hierarchy on the main
         // thread. The paint pass below runs in the same scope so
         // the rects are still valid.
+        // Combine View-marker rects (addPrivacyView) + Compose-marker
+        // rects (Modifier.replayOcclude). Both render with the same
+        // diagonal-stripe overlay below.
         val privacyRects =
             com.replayfy.android.internal.privacy.PrivacyRegistry
-                .sensitiveBounds(root)
+                .sensitiveBounds(root) +
+                com.replayfy.android.internal.privacy.PrivacyRegistry
+                    .composeBoundsRelativeTo(root)
 
         return try {
             root.draw(canvas)

@@ -69,12 +69,23 @@ internal object ViewTreeSerializer {
 
         val type = WidgetClassifier.classify(view)
 
-        // Privacy check: if this view (or any ancestor) is in the
-        // PrivacyRegistry, blank human-readable content. We still
-        // ship bounds + type + children so the player can render
-        // the silhouette + privacy overlay correctly.
+        // Privacy check: two paths.
+        //   (a) View-ancestor walk: catches Replay.addPrivacyView(view).
+        //   (b) Compose bounds intersection: catches
+        //       Modifier.replayOcclude — the marker isn't in the
+        //       view tree, so we check whether the view's window-
+        //       relative frame overlaps any registered Compose Rect.
+        //       Compose registers window-coords; `loc` here is
+        //       SCREEN coords, so we compute window-coords separately.
+        val winLoc = IntArray(2).also { view.getLocationInWindow(it) }
+        val winRect = android.graphics.Rect(
+            winLoc[0], winLoc[1],
+            winLoc[0] + view.width, winLoc[1] + view.height,
+        )
         val occluded = com.replayfy.android.internal.privacy.PrivacyRegistry
-            .isSensitive(view)
+            .isSensitive(view) ||
+            com.replayfy.android.internal.privacy.PrivacyRegistry
+                .isSensitiveByBoundsIntersect(winRect)
 
         // Text content: same extractor the tap tracker uses. Field
         // contents NEVER leak — only hint / placeholder. Occluded

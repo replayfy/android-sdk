@@ -221,13 +221,20 @@ internal class TapTracker(
             return
         }
 
-        // Privacy check — if the tapped view (or any ancestor) is
-        // marked sensitive via Replay.addPrivacyView, blank
-        // uiClass / uiValue / uiId so the wire event carries only
-        // the fact that a tap happened in this region — never WHICH
-        // button or WHAT text. Dashboard renders these as a generic
-        // "sensitive tap" marker.
-        val isSensitive = PrivacyRegistry.isSensitive(view)
+        // Privacy check — two paths:
+        //   (a) View-ancestor walk: catches the UIKit-equivalent
+        //       Replay.addPrivacyView(view) case.
+        //   (b) Compose point-intersection: catches the Compose
+        //       Modifier.replayOcclude case where the marker isn't
+        //       in the view tree at all.
+        // Tap coords get converted to window-relative before the
+        // point-intersection check because Compose registers
+        // bounds in window coords.
+        val winLoc = IntArray(2).also { view.getLocationInWindow(it) }
+        val xInWindow = winLoc[0] + x.toInt()
+        val yInWindow = winLoc[1] + y.toInt()
+        val isSensitive = PrivacyRegistry.isSensitive(view) ||
+            PrivacyRegistry.isSensitiveAtPoint(xInWindow, yInWindow)
         val uiClass = if (isSensitive) "" else view.javaClass.simpleName
         val uiValue = if (isSensitive) "" else ValueExtractor.extract(view, type)
         val uiId = if (isSensitive) "$currentRoute:sensitive"

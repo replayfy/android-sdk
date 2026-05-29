@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+        No components, permissions, or providers. The :sdk module's
+        manifest already declares ReplayContentProvider for the
+        zero-config auto-init. This module just contributes Compose
+        modifier code; nothing manifest-mergeable.
+    -->
+</manifest>

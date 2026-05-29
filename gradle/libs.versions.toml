@@ -8,6 +8,13 @@ androidx-lifecycle = "2.8.4"
 androidx-work = "2.9.1"
 androidx-annotation = "1.8.0"
 
+# Compose — BoM aligns all compose-* artifacts to one tested set.
+# Pulls in compose-ui 1.6.x + runtime 1.6.x as of this BoM date.
+compose-bom = "2024.06.00"
+# Compose compiler — must match Kotlin 1.9.25 per the compatibility
+# matrix at https://developer.android.com/jetpack/androidx/releases/compose-kotlin
+compose-compiler = "1.5.15"
+
 # Other
 kotlinx-coroutines = "1.8.1"
 okhttp = "4.12.0"
@@ -18,6 +25,12 @@ androidx-lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-p
 androidx-work-runtime = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "androidx-work" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinx-coroutines" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+
+# Compose — only :sdk-compose pulls these in. Core :sdk SDK has zero
+# Compose dependency so UIKit-only Android customers get a tiny AAR.
+compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "compose-bom" }
+compose-runtime = { group = "androidx.compose.runtime", name = "runtime" }
+compose-ui = { group = "androidx.compose.ui", name = "ui" }
 
 [plugins]
 android-library = { id = "com.android.library", version.ref = "agp" }

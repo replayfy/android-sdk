@@ -109,9 +109,82 @@ internal object PrivacyRegistry {
         return child === root
     }
 
+    // -----------------------------------------------------------------
+    //  Jetpack Compose support — Compose composables aren't Views,
+    //  so the View-ancestor walk above won't catch
+    //  Modifier.replayOcclude. The Compose wrapper registers the
+    //  composable's window-relative bounds keyed by an opaque token
+    //  and unregisters on dispose. TapTracker + ViewTreeSerializer
+    //  + BitmapCapture all consult [isSensitiveAtPoint] / [composeBounds]
+    //  in addition to the View-based checks.
+    // -----------------------------------------------------------------
+
+    /** Window-relative rect for one Compose composable marked via
+     *  Modifier.replayOcclude. Keyed by an opaque token (typically
+     *  the modifier's remembered instance) so the same composable
+     *  can update its rect on re-layout without growing the table. */
+    private val composeBounds: MutableMap<Any, Rect> =
+        Collections.synchronizedMap(HashMap())
+
+    /** Register or update Compose-composable bounds. Called from
+     *  Modifier.replayOcclude's onGloballyPositioned callback. */
+    fun addComposeBounds(token: Any, rectInWindow: Rect) {
+        synchronized(lock) { composeBounds[token] = rectInWindow }
+    }
+
+    /** Unregister. Called from the modifier's DisposableEffect.onDispose. */
+    fun removeComposeBounds(token: Any) {
+        synchronized(lock) { composeBounds.remove(token) }
+    }
+
+    /** Whether the given screen-relative point falls inside any
+     *  currently-registered Compose marker. Called by TapTracker at
+     *  tap time (after converting touch coords to window coords). */
+    fun isSensitiveAtPoint(xInWindow: Int, yInWindow: Int): Boolean =
+        synchronized(lock) {
+            for (rect in composeBounds.values) {
+                if (rect.contains(xInWindow, yInWindow)) return true
+            }
+            return false
+        }
+
+    /** Whether any registered Compose marker's bounds intersect the
+     *  given rect. Used by ViewTreeSerializer at snapshot time to
+     *  mark nodes whose painted region overlaps a Compose-occluded
+     *  composable. */
+    fun isSensitiveByBoundsIntersect(rectInWindow: Rect): Boolean =
+        synchronized(lock) {
+            for (rect in composeBounds.values) {
+                if (Rect.intersects(rect, rectInWindow)) return true
+            }
+            return false
+        }
+
+    /** Snapshot of all currently-registered Compose bounds in
+     *  root-relative coords (subtracting [root]'s window position).
+     *  Used by BitmapCapture to paint the diagonal-stripe overlay
+     *  over Compose-occluded regions in the captured PNG. */
+    fun composeBoundsRelativeTo(root: View): List<Rect> = synchronized(lock) {
+        if (composeBounds.isEmpty()) return emptyList()
+        val rootLoc = IntArray(2).also { root.getLocationOnScreen(it) }
+        val out = ArrayList<Rect>(composeBounds.size)
+        for (rect in composeBounds.values) {
+            out.add(Rect(
+                rect.left - rootLoc[0],
+                rect.top - rootLoc[1],
+                rect.right - rootLoc[0],
+                rect.bottom - rootLoc[1],
+            ))
+        }
+        return out
+    }
+
     /** Wipe the registry. Used on opt-out / SDK stop. */
     fun clear() {
-        synchronized(lock) { table.clear() }
+        synchronized(lock) {
+            table.clear()
+            composeBounds.clear()
+        }
     }
 
     // Suppress unused — ViewGroup import used in doc; future

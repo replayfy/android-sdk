@@ -22,3 +22,8 @@ dependencyResolutionManagement {
 
 rootProject.name = "replay-android-sdk"
 include(":sdk")
+// Optional Compose integration — Modifier.replayOcclude +
+// Modifier.replayTagScreenName. Customers building View-only Android
+// apps don't need to depend on this module; it adds nothing at
+// runtime when unused.
+include(":sdk-compose")
