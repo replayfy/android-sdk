@@ -250,6 +250,17 @@ internal data class PerformanceEventData(
     val value: Double,
     val unit: String, // "ms" | "mb" | "pct" | "count" | ""
     val rating: String?, // "good" | "needs-improvement" | "poor"
+    /**
+     * Optional rich payload for metrics that need more than a
+     * numeric value. Used today for `anr_ms` — the ANR watchdog
+     * captures the main-thread stack at trip time and ships it
+     * here so the dashboard can group ANRs by stack signature
+     * (same UX Crashlytics gives for crashes).
+     *
+     * Capped to ~8 KB by the emitter so a deep trace can't blow
+     * the batch.
+     */
+    val details: String? = null,
 )
 
 /**

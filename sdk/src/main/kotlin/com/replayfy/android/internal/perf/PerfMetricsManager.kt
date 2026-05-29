@@ -51,21 +51,24 @@ internal class PerfMetricsManager(
         // Ship duration via PerformanceEventData (rating reflects
         // severity: 5–10s = needs-improvement, >10s = poor — Google's
         // Android Vitals thresholds for ANR). The main-thread stack
-        // goes to logcat at WARN for development-time visibility; a
-        // follow-up will plumb it through a richer ANR envelope so
-        // the dashboard can show "main thread was stuck here" the
-        // way Sentry / Firebase do.
+        // ships in `details` so the dashboard can group ANRs by
+        // stack signature (same UX Crashlytics gives crashes) and
+        // render the "main thread was stuck here" line-by-line.
         val rating = when {
             frozenMs >= 10_000 -> "poor"
             else -> "needs-improvement"
         }
         android.util.Log.w("ReplaySdk", "ANR detected (${frozenMs}ms)\n$mainStack")
+        // Cap details at ~8 KB — a deep trace shouldn't blow the
+        // batch envelope. Same cap CrashHandler uses.
+        val safeStack = mainStack.take(8_000)
         onMetric(PerformanceEventData(
             kind = "perf",
             metric = "anr_ms",
             value = frozenMs.toDouble(),
             unit = "ms",
             rating = rating,
+            details = safeStack,
         ))
     }
 
