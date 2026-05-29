@@ -269,9 +269,28 @@ internal object ReplayCore {
             android.util.Log.w(TAG, "identify before init — dropping")
             return
         }
+        // Hoist well-known property keys to their dedicated
+        // IdentifyPayload fields so the backend's upsertEndUser
+        // can promote them to EndUser columns (used by the
+        // dashboard's user list + filters). Everything else stays
+        // in customProps as a JSON blob.
+        //
+        // Matches UXCam's behaviour: setUserIdentity("foo@bar.com")
+        // populates the email column even when the customer passed
+        // it via the generic properties bag.
+        val email = (properties?.get("email") as? String)?.trim()?.lowercase()
+        val name = (properties?.get("name") as? String)?.trim()
+        val plan = (properties?.get("plan") as? String)?.trim()
+        val rest = properties?.filter { (k, _) ->
+            k != "email" && k != "name" && k != "plan"
+        }?.takeIf { it.isNotEmpty() }
+
         s.identity = IdentifyPayload(
             distinctId = distinctId,
-            customProps = properties,
+            email = email,
+            name = name,
+            plan = plan,
+            customProps = rest,
         )
         // Force-flush so the identity attaches as soon as possible.
         scope.launch(Dispatchers.IO) { flushNow() }
