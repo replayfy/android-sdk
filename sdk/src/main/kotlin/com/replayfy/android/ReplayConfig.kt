@@ -63,6 +63,16 @@ data class ReplayConfig(
     val captureSnapshotPixels: Boolean = true,
 
     /**
+     * Cadence of the continuous snapshot loop, in milliseconds.
+     *
+     * Matches UXCam's default of ~2 FPS (500 ms). Lower values mean
+     * smoother playback at the cost of CPU + upload bandwidth.
+     * Floor is clamped to 200 ms inside [com.replayfy.android.internal.capture.SnapshotCapture]
+     * to keep the main thread responsive.
+     */
+    val snapshotIntervalMs: Long = 500L,
+
+    /**
      * Auto-detect the current screen from each Activity resume
      * (route becomes `activity.javaClass.simpleName`). When false,
      * the SDK only sets a route when the customer calls

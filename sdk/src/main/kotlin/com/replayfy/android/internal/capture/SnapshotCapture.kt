@@ -89,6 +89,61 @@ internal class SnapshotCapture(
      */
     @Volatile var enabled: Boolean = true
 
+    /**
+     * UXCam-style periodic capture cadence.
+     *
+     * UXCam reverse-engineered: their default capture rate is
+     * ~2 FPS (every 500 ms) during an active session. Without this,
+     * a session that doesn't change screens produces ONE snapshot
+     * total and the player feels like a static image. With it, the
+     * player gets a continuous-feeling timeline of frames matching
+     * the user's perception of "video".
+     *
+     * Wired by [start] / [stop]; the periodic callback fires
+     * `captureNow("periodic")` which goes through the same gate
+     * (enabled flag + minIntervalMs throttle) as every other
+     * trigger. Pause-recording / opt-out automatically silence it
+     * via the `enabled` short-circuit.
+     */
+    @Volatile var periodicIntervalMs: Long = 500L
+    private var periodicRunnable: Runnable? = null
+
+    /**
+     * Start the periodic capture loop. Idempotent — repeat calls
+     * cancel the previous Runnable so we never double-schedule.
+     * Called by [com.replayfy.android.internal.ReplayCore] after
+     * init lands and the snapshot uploader is wired.
+     */
+    fun startPeriodic() {
+        stopPeriodic()
+        val task = object : Runnable {
+            override fun run() {
+                if (enabled) {
+                    // Don't post if a recent snapshot fired (minIntervalMs
+                    // throttle already gates this in doCapture, but we
+                    // skip the Handler hop too).
+                    val now = System.currentTimeMillis()
+                    if (now - lastSnapshotAtMs >= periodicIntervalMs) {
+                        doCapture("periodic")
+                    }
+                }
+                mainHandler.postDelayed(this, periodicIntervalMs)
+            }
+        }
+        periodicRunnable = task
+        mainHandler.postDelayed(task, periodicIntervalMs)
+    }
+
+    /**
+     * Stop the periodic loop. Called from ReplayCore.stop /
+     * pauseRecording so we don't churn out captures while the SDK
+     * is paused or torn down.
+     */
+    fun stopPeriodic() {
+        periodicRunnable?.let { mainHandler.removeCallbacks(it) }
+        periodicRunnable = null
+    }
+
     fun captureNow(trigger: String) {
         if (!enabled) return
         if (Looper.myLooper() == Looper.getMainLooper()) {

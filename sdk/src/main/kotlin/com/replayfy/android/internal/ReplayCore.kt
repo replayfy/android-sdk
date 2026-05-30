@@ -330,6 +330,15 @@ internal object ReplayCore {
             // the thumbnail upload targets the live session even
             // after background→foreground rotations.
             snap.sessionIdProvider = { runtime?.sessionId }
+            // Honor the customer's snapshot cadence preference;
+            // remote config can re-tune this mid-session.
+            snap.periodicIntervalMs = cfg.snapshotIntervalMs.coerceAtLeast(200L)
+            // UXCam-style ~2 FPS continuous capture so the player
+            // doesn't feel like a static gallery between screen
+            // changes. Throttled by minIntervalMs inside doCapture
+            // so a fast cadence + back-to-back triggers don't
+            // double-fire.
+            snap.startPeriodic()
         }
 
         // Honor the autoScreenName opt-out. Default-true; flipping
@@ -1097,6 +1106,11 @@ internal object ReplayCore {
         // (returns null after the first call), so subsequent
         // foregrounds don't re-emit.
         perfMetrics?.reportFirstForeground()
+        // Resume the UXCam-style continuous capture loop. Idempotent
+        // — startPeriodic cancels the previous Runnable first, so an
+        // accidental double-foreground (e.g. dialog dismiss racing
+        // with onResume) won't double-schedule.
+        snapshotCapture?.startPeriodic()
     }
 
     private fun onAppBackgrounded() {
@@ -1117,6 +1131,11 @@ internal object ReplayCore {
             return
         }
         emitSessionEnd(rt, reason = "background")
+        // Halt the continuous capture loop while the app is in the
+        // background — we'd otherwise burn the main thread cancelling
+        // PixelCopy requests that can't acquire a SurfaceView. Resumes
+        // when the customer foregrounds and we kick off a new session.
+        snapshotCapture?.stopPeriodic()
         scope.launch(Dispatchers.IO) {
             flushNow()
         }
@@ -1130,6 +1149,10 @@ internal object ReplayCore {
                 flushNow()
             }
         }
+        // Stop continuous capture before tearing down — leaving the
+        // Runnable scheduled would resurrect captures into a stopped
+        // runtime (snapshotCapture.enabled is true by default).
+        snapshotCapture?.stopPeriodic()
         flushJob?.cancel()
         flushJob = null
         runtime = null
