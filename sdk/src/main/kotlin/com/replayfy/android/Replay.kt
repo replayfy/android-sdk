@@ -456,6 +456,33 @@ object Replay {
     }
 
     /**
+     * Override the host app's version + build that the SDK auto-
+     * detects from PackageInfo. Used by:
+     *
+     *   - Flavor builds where the marketing version differs from
+     *     `versionName` (e.g. white-label apps that brand each
+     *     build differently).
+     *   - Dynamic feature modules where the resolved version is
+     *     wrong.
+     *   - React Native / Flutter / Cordova bridges that have their
+     *     OWN app version separate from the Android wrapper's.
+     *
+     * Call BEFORE [init] (or at app startup before any session
+     * fires) so the FIRST batch carries the override. Subsequent
+     * sessions also see it — the override is sticky for the
+     * process lifetime.
+     *
+     * Used by the backend symbolication service to pick the right
+     * mapping.txt + NDK .so symbols for crash stacks. Pass null
+     * to clear the override and fall back to PackageInfo.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun setAppVersion(version: String?, build: String? = null) {
+        ReplayCore.setAppVersionOverride(version, build)
+    }
+
+    /**
      * Toggle capture of advanced gestures — long-press, four-
      * direction swipe, and pinch — in addition to the always-on
      * tap. When enabled, each gesture emits a TapEventData with

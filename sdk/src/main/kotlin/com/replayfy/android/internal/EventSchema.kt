@@ -30,6 +30,15 @@ internal data class ReplaySdkDescriptor(
     val name: String,
     val version: String,
     val platform: String,
+    /** Customer's app version (versionName from PackageInfo) — used
+     *  by the backend symbolication service to pick the right
+     *  mapping.txt / NDK .so symbols when deobfuscating crash
+     *  stacks. */
+    val appVersion: String? = null,
+    /** Customer's app build (versionCode as string) — paired with
+     *  appVersion to disambiguate hotfix builds with the same
+     *  marketing version. */
+    val appBuild: String? = null,
 )
 
 /**

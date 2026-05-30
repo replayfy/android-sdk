@@ -23,6 +23,14 @@ import java.util.concurrent.atomic.AtomicLong
 internal class SessionRuntime(
     private val config: ReplayConfig,
     val deviceContext: ReplayPageContext,
+    /** Host app's versionName from PackageInfo. Threaded into the
+     *  sdk descriptor so the backend symbolication service can pick
+     *  the right mapping.txt + NDK .so symbols for crash stacks
+     *  from this batch. */
+    val appVersion: String? = null,
+    /** Host app's versionCode (as String for cross-platform parity
+     *  with iOS CFBundleVersion which can be alphanumeric). */
+    val appBuild: String? = null,
 ) {
     /** Public session id. Reused across all segments of this session. */
     val sessionId: String = "ses_" + UUID.randomUUID().toString().replace("-", "").take(16)
@@ -54,6 +62,8 @@ internal class SessionRuntime(
         name = BuildConfig.SDK_NAME,
         version = BuildConfig.SDK_VERSION,
         platform = PLATFORM_ANDROID,
+        appVersion = appVersion,
+        appBuild = appBuild,
     )
 
     /** Append an event. Returns the buffer size post-append so the

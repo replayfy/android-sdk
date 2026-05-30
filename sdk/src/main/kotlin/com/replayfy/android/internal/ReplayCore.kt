@@ -1126,9 +1126,16 @@ internal object ReplayCore {
 
     private fun startNewSession(): SessionRuntime {
         val ctx = appContext ?: error("autoBootstrap should have set appContext")
+        // Resolve app version on each session start so customers
+        // running side-loaded / in-app update flows pick up new
+        // versions without restart. Reads are cheap (PackageInfo
+        // is cached by PackageManager).
+        val (appVer, appBuild) = resolveAppVersion(ctx)
         val rt = SessionRuntime(
             config = config!!,
             deviceContext = buildPageContext(ctx),
+            appVersion = appVersionOverride ?: appVer,
+            appBuild = appBuildOverride ?: appBuild,
         )
         runtime = rt
         // Reset the once-per-session thumbnail flag so the new
@@ -1136,6 +1143,42 @@ internal object ReplayCore {
         // skipped by the previous session's flag).
         snapshotCapture?.thumbnailUploader?.reset()
         return rt
+    }
+
+    /** Customer overrides for [SessionRuntime] app-version capture.
+     *  Set via [Replay.setAppVersion]. When non-null, these take
+     *  precedence over the values read from PackageManager. */
+    @Volatile private var appVersionOverride: String? = null
+    @Volatile private var appBuildOverride: String? = null
+
+    /** Public setter for the app-version override. Wired from
+     *  [Replay.setAppVersion]; called by customers whose host-app
+     *  versioning doesn't match the PackageInfo values (e.g. flavor
+     *  builds, dynamic feature modules). */
+    fun setAppVersionOverride(version: String?, build: String?) {
+        appVersionOverride = version
+        appBuildOverride = build
+    }
+
+    /** Read the host app's versionName + versionCode via PackageManager.
+     *  Returns nulls if the lookup throws (PackageManager.NameNotFound
+     *  is theoretically possible but vanishingly rare). */
+    private fun resolveAppVersion(ctx: Context): Pair<String?, String?> {
+        return try {
+            val pm = ctx.packageManager
+            val info = pm.getPackageInfo(ctx.packageName, 0)
+            val name = info.versionName
+            val code = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                info.longVersionCode.toString()
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode.toString()
+            }
+            Pair(name, code)
+        } catch (t: Throwable) {
+            android.util.Log.w(TAG, "app version lookup failed: ${t.message}")
+            Pair(null, null)
+        }
     }
 
     private fun emitSessionStart(rt: SessionRuntime) {
