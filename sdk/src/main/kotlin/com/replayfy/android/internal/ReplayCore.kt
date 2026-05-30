@@ -1250,11 +1250,42 @@ internal object ReplayCore {
 
     /** Manual screen tag override. Called by Replay.tagScreenName.
      *  Also triggers an immediate snapshot so the dashboard shows
-     *  the tagged screen with its new identity. */
+     *  the tagged screen with its new identity.
+     *
+     *  Also emits a `custom { kind: "screen" }` event so the
+     *  dashboard's `/screens` endpoint has something to count.
+     *  Without this row, the dashboard's Screens tab shows
+     *  "No screens recorded" even after navigation — `pageCount`
+     *  on the Session row (driven by batch envelope page.url
+     *  increments) goes up, but the ClickHouse `kind='screen'`
+     *  rows that the Screens panel queries stay empty. */
     fun setRoute(route: String) {
-        tapTracker?.setRoute(route)
+        val cleaned = route.trim().take(120)
+        if (cleaned.isBlank()) return
+        tapTracker?.setRoute(cleaned)
+        // Same-route duplicate suppression — the auto-screen detector
+        // re-fires on every Activity onResume, including dialog
+        // dismiss / config change cases where the route hasn't
+        // actually changed. Drop those so the dashboard timeline
+        // doesn't fill with phantom screens.
+        val rt = runtime
+        if (rt != null && cleaned != lastEmittedScreen) {
+            lastEmittedScreen = cleaned
+            val data = CustomEventData(
+                kind = "screen",
+                name = cleaned,
+                properties = mapOf("name" to cleaned),
+            )
+            push(rt, type = "custom", data = data)
+        }
         snapshotCapture?.captureNow("manual")
     }
+
+    /** Last screen name we shipped a `kind="screen"` event for —
+     *  used by [setRoute] to dedupe the auto-screen detector firing
+     *  repeatedly with the same name. Reset to null on session start. */
+    @Volatile
+    private var lastEmittedScreen: String? = null
 
     fun isRecording(): Boolean = runtime != null
 
@@ -1296,6 +1327,10 @@ internal object ReplayCore {
         // session's first snapshot fires a fresh upload (not
         // skipped by the previous session's flag).
         snapshotCapture?.thumbnailUploader?.reset()
+        // Reset the per-session screen-dedup memo so the first
+        // setRoute call after a new session ships even if the
+        // route happens to match the last session's last screen.
+        lastEmittedScreen = null
         return rt
     }
 
