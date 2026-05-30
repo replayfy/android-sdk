@@ -65,6 +65,48 @@ internal object PrivacyRegistry {
     @Volatile var occludeAllScreen: Boolean = false
 
     // -----------------------------------------------------------------
+    //  Per-class occlusion (UXCam applyOcclusion / removeOcclusion)
+    // -----------------------------------------------------------------
+    //
+    // Customers can register arbitrary [View] subclass keys and every
+    // instance of that class (or its descendants) gets occluded.
+    // Goes beyond the bulk text-fields / text-views flags — useful
+    // when the customer has a custom widget (e.g. CreditCardInput,
+    // MedicalRecordCard) they want default-occluded across the app.
+    //
+    // Read by isSensitive() AFTER the bulk flags + BEFORE the
+    // per-view ancestor walk. instanceof check is O(class-set-size)
+    // per node; class sets are tiny in practice (single-digit count).
+
+    private val occludedClasses: MutableSet<Class<out View>> =
+        Collections.synchronizedSet(HashSet())
+
+    /** Add a View subclass — every instance gets occluded on the
+     *  next snapshot. Idempotent. Mirrors UXCam's
+     *  `applyOcclusion(Class<? extends View>)`. */
+    fun applyOcclusion(viewClass: Class<out View>) {
+        synchronized(occludedClasses) { occludedClasses.add(viewClass) }
+    }
+
+    /** Remove a previously-registered class. Safe to call even when
+     *  the class was never added. */
+    fun removeOcclusion(viewClass: Class<out View>) {
+        synchronized(occludedClasses) { occludedClasses.remove(viewClass) }
+    }
+
+    /** Test whether [view] is an instance of any registered class.
+     *  Hot path — kept allocation-free. */
+    private fun matchesOccludedClass(view: View): Boolean {
+        if (occludedClasses.isEmpty()) return false
+        synchronized(occludedClasses) {
+            for (cls in occludedClasses) {
+                if (cls.isInstance(view)) return true
+            }
+        }
+        return false
+    }
+
+    // -----------------------------------------------------------------
     //  Pending one-shot rects (RN / Flutter bridges)
     // -----------------------------------------------------------------
     //
@@ -132,6 +174,9 @@ internal object PrivacyRegistry {
         // buttons.
         if (occludeAllTextFields && view is android.widget.EditText) return true
         if (occludeAllTextViews && view is android.widget.TextView) return true
+        // Per-class occlusion (applyOcclusion). Cheap when the class
+        // set is empty (most apps).
+        if (matchesOccludedClass(view)) return true
         if (table.containsKey(view)) return true
         var parent = view.parent
         while (parent != null) {
@@ -157,10 +202,11 @@ internal object PrivacyRegistry {
     fun bulkBounds(root: View): List<Rect> {
         val wantFields = occludeAllTextFields
         val wantViews = occludeAllTextViews
-        if (!wantFields && !wantViews) return emptyList()
+        val hasClassFilter = occludedClasses.isNotEmpty()
+        if (!wantFields && !wantViews && !hasClassFilter) return emptyList()
         val out = ArrayList<Rect>()
         val rootLoc = IntArray(2).also { root.getLocationOnScreen(it) }
-        walkBulk(root, rootLoc, wantFields, wantViews, out)
+        walkBulk(root, rootLoc, wantFields, wantViews, hasClassFilter, out)
         return out
     }
 
@@ -169,6 +215,7 @@ internal object PrivacyRegistry {
         rootLoc: IntArray,
         wantFields: Boolean,
         wantViews: Boolean,
+        hasClassFilter: Boolean,
         out: MutableList<Rect>,
     ) {
         if (!view.isShown || view.width <= 0 || view.height <= 0) return
@@ -177,7 +224,11 @@ internal object PrivacyRegistry {
             // both flags we'd add the same rect twice. The wantFields
             // branch handles EditText; wantViews picks up the rest.
             (wantViews && view is android.widget.TextView &&
-                view !is android.widget.EditText)
+                view !is android.widget.EditText) ||
+            // Per-class occlusion (applyOcclusion). Wrapped in the
+            // cached flag so empty-set apps don't pay the
+            // instanceof loop cost on every view.
+            (hasClassFilter && matchesOccludedClass(view))
         if (matches) {
             val loc = IntArray(2).also { view.getLocationOnScreen(it) }
             out.add(
@@ -196,7 +247,7 @@ internal object PrivacyRegistry {
         if (view is android.view.ViewGroup) {
             for (i in 0 until view.childCount) {
                 val child = view.getChildAt(i) ?: continue
-                walkBulk(child, rootLoc, wantFields, wantViews, out)
+                walkBulk(child, rootLoc, wantFields, wantViews, hasClassFilter, out)
             }
         }
     }

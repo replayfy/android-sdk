@@ -290,6 +290,34 @@ object Replay {
     }
 
     /**
+     * Register a [View] subclass for occlusion — every instance
+     * (including subclasses) on screen gets the stripe overlay.
+     * Goes beyond the bulk text-fields / text-views flags: use this
+     * when the app has custom widgets (e.g. CreditCardInputView,
+     * MedicalRecordCard) that should be default-occluded across
+     * every screen they appear on.
+     *
+     * Cheap when no classes registered (~zero overhead). Class set
+     * size is typically single-digit in practice.
+     *
+     * Mirrors UXCam's `applyOcclusion(Class<? extends View>)`.
+     */
+    @JvmStatic
+    fun applyOcclusion(viewClass: Class<out View>) {
+        com.replayfy.android.internal.privacy.PrivacyRegistry
+            .applyOcclusion(viewClass)
+    }
+
+    /** Unregister a previously-added occluded class. Safe to call
+     *  for classes that were never registered. Mirrors UXCam's
+     *  `removeOcclusion(Class<? extends View>)`. */
+    @JvmStatic
+    fun removeOcclusion(viewClass: Class<out View>) {
+        com.replayfy.android.internal.privacy.PrivacyRegistry
+            .removeOcclusion(viewClass)
+    }
+
+    /**
      * Paint over the ENTIRE captured snapshot with the diagonal-
      * stripe occlusion overlay. Nuclear option for screens where
      * the customer doesn't want ANY pixel data to leave the device
