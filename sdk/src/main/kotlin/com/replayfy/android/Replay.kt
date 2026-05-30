@@ -456,6 +456,26 @@ object Replay {
     }
 
     /**
+     * Toggle capture of advanced gestures — long-press, four-
+     * direction swipe, and pinch — in addition to the always-on
+     * tap. When enabled, each gesture emits a TapEventData with
+     * `gesture` set to "long_press" / "swipe_left" / "swipe_right" /
+     * "swipe_up" / "swipe_down" / "pinch". Pinch events also carry
+     * a `pinchScale` (final ratio).
+     *
+     * Default off — the gesture detectors allocate lazily on
+     * first interactive touch only when this flag is true, so
+     * non-users pay zero overhead.
+     *
+     * Mirrors UXCam's `enableAdvancedGestureRecognizer(boolean)`.
+     */
+    @JvmStatic
+    fun enableAdvancedGestureRecognizer(enabled: Boolean) {
+        com.replayfy.android.internal.tracker.TouchListenerWrapper
+            .advancedGesturesEnabled = enabled
+    }
+
+    /**
      * Allow brief backgrounding (≤ [breakWindowMs], default 30 s)
      * WITHOUT ending the session. The same session resumes when
      * the user returns. Default off (every background ends).

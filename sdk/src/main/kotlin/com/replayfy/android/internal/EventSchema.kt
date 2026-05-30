@@ -118,6 +118,17 @@ internal data class TapEventData(
     val uiValue: String,
     val uiId: String,
     val isSensitive: Boolean,
+    /**
+     * Gesture kind — "tap" by default. Advanced gestures
+     * (long_press / swipe_* / pinch) emitted when the customer
+     * calls Replay.enableAdvancedGestureRecognizer(true). Direction
+     * is encoded INTO the swipe variant so the dashboard can
+     * filter by "gesture === swipe_up" without parsing a separate
+     * direction field.
+     */
+    val gesture: String? = null,
+    /** Final scale for "pinch" gestures (omitted otherwise). */
+    val pinchScale: Double? = null,
 )
 
 /**

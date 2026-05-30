@@ -212,7 +212,13 @@ internal class TapTracker(
     //  Tap → TapEventData
     // -----------------------------------------------------------------
 
-    private fun onTapCaptured(view: View, x: Float, y: Float) {
+    private fun onTapCaptured(
+        view: View,
+        x: Float,
+        y: Float,
+        gesture: String?,
+        pinchScale: Double?,
+    ) {
         val type = WidgetClassifier.classify(view)
         if (type == WidgetClassifier.UiType.UNKNOWN) {
             // Don't emit taps on unclassified views — too noisy, no
@@ -266,6 +272,8 @@ internal class TapTracker(
                 uiValue = uiValue,
                 uiId = uiId,
                 isSensitive = isSensitive,
+                gesture = gesture,
+                pinchScale = pinchScale,
             ),
         )
         // Snapshot pipeline subscribes via this hook to debounce an
