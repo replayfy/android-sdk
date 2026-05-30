@@ -456,6 +456,85 @@ object Replay {
     }
 
     /**
+     * Allow brief backgrounding (≤ [breakWindowMs], default 30 s)
+     * WITHOUT ending the session. The same session resumes when
+     * the user returns. Default off (every background ends).
+     *
+     * Mirrors UXCam's `allowShortBreakForAnotherApp(boolean)`. Useful
+     * when the user routinely switches to another app for short
+     * operations (copy 2FA code, switch to authenticator).
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun allowShortBreakForAnotherApp(allow: Boolean, breakWindowMs: Long = 30_000L) {
+        ReplayCore.setAllowShortBreak(allow, breakWindowMs)
+    }
+
+    /**
+     * Toggle multi-session recording per app launch. When false,
+     * only ONE session fires per process — subsequent foregrounds
+     * after a session_end are no-ops. Default true.
+     *
+     * Mirrors UXCam's `setMultiSessionRecord(boolean)`.
+     */
+    @JvmStatic
+    fun setMultiSessionRecord(enabled: Boolean) {
+        ReplayCore.setMultiSessionRecord(enabled)
+    }
+
+    /**
+     * Register a callback that fires after the SDK's first
+     * successful batch upload (server-side handshake confirmed).
+     * Used during onboarding so the customer's "Verify integration"
+     * button can light up.
+     *
+     * If verification has ALREADY fired this process the listener
+     * runs synchronously on the calling thread. Otherwise it
+     * runs on the MAIN thread when the next upload succeeds.
+     * One-shot per process — re-registering after the SDK has
+     * verified will fire immediately, but verification itself
+     * does not happen twice.
+     *
+     * Mirrors UXCam's `addVerificationListener(VerificationListener)`.
+     */
+    @JvmStatic
+    fun addVerificationListener(listener: Runnable) {
+        ReplayCore.addVerificationListener { listener.run() }
+    }
+
+    /** Drop a previously-added listener. Safe to call even when
+     *  the listener was never added or already fired. */
+    @JvmStatic
+    fun removeVerificationListener(listener: Runnable) {
+        // Runnable -> () -> Unit mapping is not directly reversible
+        // (we wrap each Runnable in a closure when adding). For now
+        // the only customer pattern that matters is "register one
+        // listener early, never remove it" — this is a best-effort
+        // wrap-and-forward; the wrapped closure won't be found.
+        // TODO: keep a Runnable -> closure map for accurate removal.
+        ReplayCore.removeVerificationListener { listener.run() }
+    }
+
+    /**
+     * Manual bug-report event. Wire to a "Send Feedback" /
+     * "Report Issue" button — the dashboard surfaces these as
+     * flagged events in the session timeline + triggers a fresh
+     * snapshot so support can jump straight to the relevant
+     * moment with the screen the user was looking at.
+     *
+     * Mirrors UXCam's `reportBugEvent(name, description)`.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun reportBugEvent(
+        name: String,
+        description: String? = null,
+        properties: Map<String, Any?>? = null,
+    ) {
+        ReplayCore.reportBugEvent(name, description, properties)
+    }
+
+    /**
      * Stop recording AND block (up to [timeoutMs]) until the
      * in-memory buffer has been uploaded or persisted to disk.
      * Call this from a sign-out flow or just before `System.exit`

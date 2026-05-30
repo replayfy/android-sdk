@@ -34,9 +34,35 @@ internal class BatchUploader(
      * Send the envelope. Returns true on live success, false when
      * we fell back to queueing (or if even queueing failed).
      */
+    /**
+     * Callback fired the first time a batch successfully reaches
+     * the backend. Used by [com.replayfy.android.internal.ReplayCore]
+     * to drain the verification-listener list registered via
+     * `Replay.addVerificationListener` — mirrors UXCam's
+     * `VerificationListener.onVerificationSuccess`.
+     *
+     * One-shot: after firing once the closure is cleared so
+     * subsequent uploads don't re-notify. Set to non-null when
+     * the customer registers a listener; cleared on first success.
+     */
+    @Volatile
+    var onFirstUploadSuccess: (() -> Unit)? = null
+
     fun upload(envelope: ReplayBatchEnvelope): Boolean {
         val ok = sender.send(envelope)
-        if (ok) return true
+        if (ok) {
+            // Fire the verification-success callback exactly once.
+            // Read-and-clear under a lock so concurrent uploads
+            // can't double-fire if the customer registers a
+            // listener mid-batch.
+            val cb = synchronized(this) {
+                val c = onFirstUploadSuccess
+                onFirstUploadSuccess = null
+                c
+            }
+            cb?.invoke()
+            return true
+        }
 
         // Live send failed — serialize once and persist. Caller's
         // already-serialized JSON would be nicer but the existing

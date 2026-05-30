@@ -65,10 +65,52 @@ internal object ReplayCore {
     @Volatile private var consoleCapture: com.replayfy.android.internal.console.ConsoleCapture? = null
     @Volatile private var optOutStore: OptOutStore? = null
 
+    /**
+     * Verification listeners — fired after the SDK's first
+     * successful batch upload (server-side handshake confirmed).
+     * Used during onboarding for "Verify integration" UI affordances.
+     *
+     * UXCam parity: `addVerificationListener` / `removeVerificationListener`.
+     *
+     * One-shot semantics — listeners run ONCE per process (no
+     * re-fire on subsequent uploads even after [stop] / re-init).
+     * Concurrent-safe; protected by [verificationListenersLock].
+     */
+    private val verificationListenersLock = Any()
+    private val verificationListeners = ArrayList<() -> Unit>()
+    @Volatile private var verificationFired: Boolean = false
+
     /** Snapshot-pipeline pause flag — toggled by Replay.pauseRecording /
      *  resumeRecording. Independent of opt-out (which is a privacy
      *  setting, persisted; this is a runtime toggle, in-memory only). */
     @Volatile private var snapshotPaused: Boolean = false
+
+    // -----------------------------------------------------------------
+    //  Session lifecycle controls (UXCam allowShortBreak +
+    //  setMultiSessionRecord)
+    // -----------------------------------------------------------------
+    //
+    // allowShortBreak — when true, a brief backgrounding (≤
+    // shortBreakMs) does NOT end the session. The user returns
+    // to the same session. Default false (every backgrounding
+    // ends the session, matching the simpler analytics model).
+    //
+    // setMultiSessionRecord — when false, only ONE session per app
+    // launch. Subsequent foregroundings DON'T start a new session;
+    // they're no-ops. Default true.
+
+    @Volatile private var allowShortBreak: Boolean = false
+    @Volatile private var shortBreakMs: Long = 30_000L
+    @Volatile private var multiSessionRecord: Boolean = true
+    /** Counter incremented every time we [startNewSession] →
+     *  emitSessionStart. Used by the multiSessionRecord=false gate
+     *  to skip subsequent foreground events. */
+    @Volatile private var sessionsThisProcess: Int = 0
+    /** When allowShortBreak is on, a Runnable scheduled on the
+     *  main handler that will fire `emitSessionEnd` after
+     *  [shortBreakMs] of background. Foregrounding cancels it. */
+    @Volatile private var pendingShortBreakEnd: Runnable? = null
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     /** Whole-SDK coroutine scope. Cancelled on [stop]. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -244,6 +286,12 @@ internal object ReplayCore {
         // previous process lifetime.
         uploader = BatchUploader(applicationContext, cfg, newSender)
         uploader?.scheduleDrain()
+        // Re-wire the verification callback now that uploader
+        // exists — covers the case where customer registered a
+        // listener BEFORE init completed.
+        synchronized(verificationListenersLock) {
+            if (verificationListeners.isNotEmpty()) wireVerificationCallback()
+        }
 
         if (cfg.distinctId != null) {
             newSender.identity = IdentifyPayload(distinctId = cfg.distinctId)
@@ -603,6 +651,47 @@ internal object ReplayCore {
     fun isSnapshotPaused(): Boolean = snapshotPaused
 
     // -----------------------------------------------------------------
+    //  Session lifecycle controls (UXCam parity)
+    // -----------------------------------------------------------------
+
+    /**
+     * Toggle the "brief backgrounding doesn't end the session"
+     * behaviour. When true, a backgrounding ≤ [breakWindowMs]
+     * does NOT trigger session_end — the same session resumes
+     * when the user returns. Default false.
+     *
+     * Mirrors UXCam's `allowShortBreakForAnotherApp(boolean)`. The
+     * window defaults to 30 s; pass a custom value when the
+     * customer wants tighter / looser semantics (e.g. 60 s for
+     * authentication flows where the user switches to an
+     * authenticator app).
+     */
+    @JvmOverloads
+    fun setAllowShortBreak(allow: Boolean, breakWindowMs: Long = 30_000L) {
+        allowShortBreak = allow
+        shortBreakMs = breakWindowMs.coerceAtLeast(0L)
+    }
+
+    fun isAllowShortBreak(): Boolean = allowShortBreak
+
+    /**
+     * Toggle multi-session recording per app launch. When false,
+     * only ONE session fires per process — subsequent foregrounds
+     * after a session_end are no-ops. Default true (every
+     * foreground after end yields a new session).
+     *
+     * Mirrors UXCam's `setMultiSessionRecord(boolean)`. Useful for
+     * customers tracking ONE-launch flows (kiosks, onboarding
+     * wizards) where breaking into multiple sessions confuses
+     * analytics.
+     */
+    fun setMultiSessionRecord(enabled: Boolean) {
+        multiSessionRecord = enabled
+    }
+
+    fun isMultiSessionRecord(): Boolean = multiSessionRecord
+
+    // -----------------------------------------------------------------
     //  UXCam-parity deep-link helpers
     // -----------------------------------------------------------------
 
@@ -691,6 +780,113 @@ internal object ReplayCore {
         consoleCapture = null
     }
 
+    // -----------------------------------------------------------------
+    //  Verification listeners (UXCam onboarding parity)
+    // -----------------------------------------------------------------
+
+    /** Register a listener — invoked on the main thread immediately
+     *  if verification has already fired this process, otherwise
+     *  on the first successful batch upload. Idempotent (adding the
+     *  same closure instance twice is harmless; both will fire once
+     *  each since we hold them by identity). */
+    fun addVerificationListener(listener: () -> Unit) {
+        // If verification already happened this process, fire
+        // synchronously so customers calling addListener AFTER
+        // onboarding don't get stuck waiting for a second upload
+        // that never comes.
+        if (verificationFired) {
+            try { listener() } catch (_: Throwable) {}
+            return
+        }
+        synchronized(verificationListenersLock) {
+            verificationListeners.add(listener)
+            // Lazy wire on first listener add. uploader may be null
+            // if init hasn't completed yet — we'll re-wire post-init
+            // via [wireVerificationCallback].
+            wireVerificationCallback()
+        }
+    }
+
+    /** Drop a previously-added listener. Safe to call even when
+     *  the listener was never added or already fired. */
+    fun removeVerificationListener(listener: () -> Unit) {
+        synchronized(verificationListenersLock) {
+            verificationListeners.remove(listener)
+        }
+    }
+
+    /** Hook the uploader's one-shot success callback to drain the
+     *  listener list. Called when listeners are added AND when
+     *  the uploader becomes available during init. */
+    private fun wireVerificationCallback() {
+        val up = uploader ?: return
+        if (verificationFired) return
+        up.onFirstUploadSuccess = {
+            verificationFired = true
+            val toFire = synchronized(verificationListenersLock) {
+                val copy = verificationListeners.toList()
+                verificationListeners.clear()
+                copy
+            }
+            // Hop to main thread for the callback — customers
+            // typically use it to update UI ("Verified ✓" badge).
+            val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+            for (l in toFire) {
+                mainHandler.post {
+                    try { l() } catch (_: Throwable) {}
+                }
+            }
+        }
+    }
+
+    /**
+     * Emit a manual bug-report event. UXCam customers wire this to
+     * a "Send Feedback" / "Report Issue" button in their app —
+     * the dashboard then surfaces these as flagged events in the
+     * session timeline so support can jump straight to the
+     * relevant moment.
+     *
+     * Triggers an IMMEDIATE snapshot so the dashboard has fresh
+     * pixels at the bug-report timestamp regardless of where in
+     * the regular capture cadence we are.
+     *
+     * Mirrors UXCam's `reportBugEvent(name, description)`. Any
+     * additional structured properties the customer wants attached
+     * (form fields, device state) go via the [properties] map.
+     */
+    @JvmOverloads
+    fun reportBugEvent(
+        name: String,
+        description: String? = null,
+        properties: Map<String, Any?>? = null,
+    ) {
+        val rt = runtime ?: run {
+            android.util.Log.w(TAG, "reportBugEvent before session — dropping '$name'")
+            return
+        }
+        if (name.isBlank()) return
+        val safeName = name.trim().take(80)
+        // Merge the caller's optional properties with description
+        // (if any). description gets a reserved key so the dashboard
+        // can render it as the prominent text body.
+        val merged = HashMap<String, Any?>()
+        if (!description.isNullOrBlank()) {
+            merged["description"] = description.take(2_000)
+        }
+        if (properties != null) merged.putAll(properties)
+        val data = CustomEventData(
+            kind = "bug_report",
+            name = safeName,
+            properties = safeProps(merged),
+        )
+        push(rt, type = "custom", data = data)
+        // Fire a fresh snapshot so the dashboard has the current
+        // screen at the moment the bug was reported. Customers
+        // who pair this with a "screenshot attached" UI affordance
+        // will see exactly what the user saw.
+        snapshotCapture?.captureNow("bug_report")
+    }
+
     /**
      * Force-end the current session + start a fresh one. UXCam's
      * `startNewSession()` — used by customers who track logical
@@ -755,9 +951,29 @@ internal object ReplayCore {
         // No config yet → bootstrap has nothing to do. We'll start the
         // session when init lands.
         if (config == null) return
+        // If we backgrounded recently AND allowShortBreak is on,
+        // cancel the pending end-of-session task — the user is
+        // resuming the SAME session, not starting a new one. UXCam
+        // parity: "switching to copy a 2FA code shouldn't fragment
+        // analytics into two sessions."
+        if (pendingShortBreakEnd != null) {
+            mainHandler.removeCallbacks(pendingShortBreakEnd!!)
+            pendingShortBreakEnd = null
+            // Runtime still alive — nothing else to do.
+            if (runtime != null) return
+        }
         // Already-running session AND we haven't backgrounded yet → no-op.
         if (runtime != null) return
+        // setMultiSessionRecord(false) gate: if a session has
+        // ALREADY existed this process, don't start a new one on
+        // re-foreground. The customer wants exactly one session
+        // per launch.
+        if (!multiSessionRecord && sessionsThisProcess > 0) {
+            android.util.Log.i(TAG, "multiSessionRecord=false — skipping new session on foreground")
+            return
+        }
         val rt = startNewSession()
+        sessionsThisProcess++
         emitSessionStart(rt)
         // Cold-start measurement — emit once per process. Idempotent
         // (returns null after the first call), so subsequent
@@ -767,6 +983,21 @@ internal object ReplayCore {
 
     private fun onAppBackgrounded() {
         val rt = runtime ?: return
+        if (allowShortBreak && shortBreakMs > 0) {
+            // Schedule the session-end to fire AFTER shortBreakMs;
+            // foreground returning before that cancels the task and
+            // keeps the same session alive.
+            pendingShortBreakEnd?.let { mainHandler.removeCallbacks(it) }
+            val task = Runnable {
+                pendingShortBreakEnd = null
+                val r = runtime ?: return@Runnable
+                emitSessionEnd(r, reason = "background")
+                scope.launch(Dispatchers.IO) { flushNow() }
+            }
+            pendingShortBreakEnd = task
+            mainHandler.postDelayed(task, shortBreakMs)
+            return
+        }
         emitSessionEnd(rt, reason = "background")
         scope.launch(Dispatchers.IO) {
             flushNow()
