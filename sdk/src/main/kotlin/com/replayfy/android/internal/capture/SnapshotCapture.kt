@@ -78,7 +78,19 @@ internal class SnapshotCapture(
     @Volatile
     private var lastSnapshotAtMs: Long = 0L
 
+    /**
+     * Runtime gate that ReplayCore flips when the customer calls
+     * `pauseRecording()` / `Replay.optOutSchematicRecordings(true)`.
+     * Defaults to true (recording). When false: every entry point
+     * — captureNow, scheduleIdle, screen-resume callback — early-
+     * exits without touching the view tree or the bitmap pipeline.
+     * Independent of the SDK's overall opt-out state (which short-
+     * circuits at the push() level).
+     */
+    @Volatile var enabled: Boolean = true
+
     fun captureNow(trigger: String) {
+        if (!enabled) return
         if (Looper.myLooper() == Looper.getMainLooper()) {
             doCapture(trigger)
         } else {
@@ -87,9 +99,11 @@ internal class SnapshotCapture(
     }
 
     fun scheduleIdle() {
+        if (!enabled) return
         val myGen = generation.incrementAndGet()
         mainHandler.postDelayed({
             if (generation.get() != myGen) return@postDelayed
+            if (!enabled) return@postDelayed
             doCapture("idle")
         }, idleDebounceMs)
     }

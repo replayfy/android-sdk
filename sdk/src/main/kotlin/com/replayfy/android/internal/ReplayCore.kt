@@ -63,6 +63,12 @@ internal object ReplayCore {
     @Volatile private var perfMetrics: com.replayfy.android.internal.perf.PerfMetricsManager? = null
     @Volatile private var crashHandler: com.replayfy.android.internal.crash.CrashHandler? = null
     @Volatile private var consoleCapture: com.replayfy.android.internal.console.ConsoleCapture? = null
+    @Volatile private var optOutStore: OptOutStore? = null
+
+    /** Snapshot-pipeline pause flag — toggled by Replay.pauseRecording /
+     *  resumeRecording. Independent of opt-out (which is a privacy
+     *  setting, persisted; this is a runtime toggle, in-memory only). */
+    @Volatile private var snapshotPaused: Boolean = false
 
     /** Whole-SDK coroutine scope. Cancelled on [stop]. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -84,6 +90,20 @@ internal object ReplayCore {
     fun autoBootstrap(context: Context) {
         if (!bootstrapped.compareAndSet(false, true)) return
         appContext = context.applicationContext
+
+        // Opt-out store — read FIRST so every downstream init
+        // (lifecycle observer, crash handler, tap tracker) can
+        // consult it. SharedPreferences is sync, ~1ms; fine on
+        // the main thread (ContentProvider.onCreate calls us
+        // there anyway).
+        optOutStore = OptOutStore(context.applicationContext)
+        if (optOutStore?.overallOptOut == true) {
+            android.util.Log.i(
+                TAG,
+                "Replay SDK opted out — skipping autoBootstrap",
+            )
+            return
+        }
 
         // Register on the main thread — ProcessLifecycleOwner expects
         // it. Bootstrap fires on the main thread (ContentProvider
@@ -487,6 +507,190 @@ internal object ReplayCore {
         push(rt, type = "custom", data = data)
     }
 
+    // -----------------------------------------------------------------
+    //  GDPR opt-in / opt-out (UXCam parity)
+    // -----------------------------------------------------------------
+
+    /**
+     * Set the overall opt-out flag. When true: every [push] call
+     * silently drops, no new sessions start, no uploads fire,
+     * nothing reaches the network. Persisted across launches so
+     * once the customer opts out they STAY opted out until they
+     * call [setOverallOptOut] with false (or your in-app
+     * "rejoin" toggle does).
+     *
+     * Calling with true while a session is running:
+     *   - Subsequent events drop at the [push] gate.
+     *   - The current in-memory buffer is NOT auto-flushed (callers
+     *     wanting that should chain to [stopAndUploadSync] first).
+     *   - The on-disk queue is NOT auto-purged (use [cancelSession]
+     *     for that).
+     */
+    fun setOverallOptOut(optedOut: Boolean) {
+        val store = optOutStore ?: run {
+            // autoBootstrap hadn't run yet (rare — would mean the
+            // customer called Replay.optOut() before the
+            // ContentProvider fired). Lazily build one against the
+            // first context we can find.
+            appContext?.let {
+                val s = OptOutStore(it)
+                optOutStore = s
+                s
+            } ?: run {
+                android.util.Log.w(TAG, "setOverallOptOut before bootstrap — dropping")
+                return
+            }
+        }
+        store.overallOptOut = optedOut
+        if (optedOut) {
+            // Stop the active session if any — customers opting out
+            // mid-flow expect everything to halt immediately.
+            stop()
+        }
+    }
+
+    /** Get the persisted overall opt-out flag. Defaults to false
+     *  (opted in) when bootstrap hasn't run. */
+    fun isOverallOptedOut(): Boolean = optOutStore?.overallOptOut == true
+
+    /**
+     * Set the schematic opt-out flag. When true: snapshots stop
+     * being captured + native_snapshot events drop at [push].
+     * Other event types (tap, network, console, perf) keep
+     * flowing so the dashboard still gets an interaction log,
+     * just without pixel data. Persisted across launches.
+     *
+     * Useful for screens with regulated pixel content (HIPAA
+     * health UI) where the customer still wants click + flow
+     * analytics.
+     */
+    fun setSchematicOptOut(optedOut: Boolean) {
+        val store = optOutStore ?: run {
+            appContext?.let {
+                val s = OptOutStore(it)
+                optOutStore = s
+                s
+            } ?: run {
+                android.util.Log.w(TAG, "setSchematicOptOut before bootstrap — dropping")
+                return
+            }
+        }
+        store.schematicOptOut = optedOut
+        syncSnapshotEnabled()
+    }
+
+    /** Get the persisted schematic-capture opt-out flag. */
+    fun isSchematicOptedOut(): Boolean = optOutStore?.schematicOptOut == true
+
+    /** Compute the effective recording-enabled state from the two
+     *  independent toggles (schematic opt-out + runtime pause) and
+     *  push it down to SnapshotCapture. Called whenever either
+     *  flag flips. */
+    private fun syncSnapshotEnabled() {
+        val optedOut = optOutStore?.schematicOptOut == true
+        snapshotCapture?.enabled = !snapshotPaused && !optedOut
+    }
+
+    /** Runtime pause toggle. Independent of opt-out — pauses only
+     *  the snapshot pipeline; events keep flowing. Used by
+     *  `Replay.pauseRecording()` / `resumeRecording()`. NOT
+     *  persisted: process restart resets to running. */
+    fun setSnapshotPaused(paused: Boolean) {
+        snapshotPaused = paused
+        syncSnapshotEnabled()
+    }
+
+    fun isSnapshotPaused(): Boolean = snapshotPaused
+
+    // -----------------------------------------------------------------
+    //  UXCam-parity deep-link helpers
+    // -----------------------------------------------------------------
+
+    /**
+     * Returns the dashboard URL for the current session, or null
+     * when no session is active. URL shape:
+     *   `<dashboardHost>/sessions/<sessionId>`
+     * where `dashboardHost` is derived from [ReplayConfig.apiHost]
+     * by substituting the leading `api.` host segment with `app.`
+     * (so `https://api.replayfy.io` → `https://app.replayfy.io`).
+     * Self-hosted customers' hosts work unchanged.
+     */
+    fun urlForCurrentSession(): String? {
+        val rt = runtime ?: return null
+        val host = dashboardHost() ?: return null
+        return "$host/sessions/${rt.sessionId}"
+    }
+
+    /**
+     * Returns the dashboard URL for the currently-identified user
+     * (all sessions for the active distinctId), or null when no
+     * `identify()` has been called yet.
+     */
+    fun urlForCurrentUser(): String? {
+        val did = sender?.identity?.distinctId ?: return null
+        val host = dashboardHost() ?: return null
+        return "$host/users/$did"
+    }
+
+    /** Derive the dashboard host from the configured apiHost. */
+    private fun dashboardHost(): String? {
+        val api = config?.apiHost ?: return null
+        // Strip trailing slash so we can append cleanly.
+        val trimmed = api.trimEnd('/')
+        // Replace the FIRST occurrence of "://api." with "://app."
+        // — works for the canonical replayfy.io host AND any
+        // self-hosted deployment that follows the same convention.
+        val idx = trimmed.indexOf("://api.")
+        return if (idx >= 0) {
+            trimmed.substring(0, idx) + "://app." + trimmed.substring(idx + 7)
+        } else {
+            // Unknown host shape (e.g. customer using an internal
+            // domain). Return as-is — better a working link to the
+            // ingest host than nil, the dashboard can redirect.
+            trimmed
+        }
+    }
+
+    /**
+     * Discard the current session entirely — clears the in-memory
+     * buffer and DELETES any on-disk batches still queued for
+     * upload so the session never reaches the backend.
+     *
+     * Different from [stop] which gracefully ends the session +
+     * uploads what it has. Customers reach for this when the user
+     * triggers a flow they actively don't want recorded (e.g. a
+     * "delete my activity" button) AFTER content has already been
+     * captured.
+     *
+     * No new session auto-starts — the next foregrounding will, per
+     * the standard lifecycle. Call [stop] first if you also want
+     * to suppress that.
+     *
+     * Mirrors UXCam's `cancelCurrentSession()`.
+     */
+    fun cancelCurrentSession() {
+        val rt = runtime
+        if (rt != null) {
+            // Drop the buffered events without emitting session_end
+            // (we're abandoning the session, not closing it).
+            rt.drain()
+            runtime = null
+        }
+        flushJob?.cancel()
+        flushJob = null
+        // Wipe the on-disk retry queue too. Anything that was
+        // persisted from a prior failed upload gets dropped along
+        // with the active buffer.
+        try { uploader?.clearQueue() } catch (_: Throwable) {}
+        // Stop perf collectors + console capture so they don't
+        // bleed into the NEXT auto-started session as if no break
+        // had happened.
+        perfMetrics?.stop()
+        perfMetrics = null
+        consoleCapture?.stop()
+        consoleCapture = null
+    }
+
     /**
      * Force-end the current session + start a fresh one. UXCam's
      * `startNewSession()` — used by customers who track logical
@@ -725,6 +929,19 @@ internal object ReplayCore {
     }
 
     private fun push(rt: SessionRuntime, type: String, data: Any) {
+        // Overall opt-out → silently drop. Single gate over the
+        // entire emit pipeline; every other path (tap, snapshot,
+        // crash, perf metric) ends up here. session_end events fired
+        // by [stop] still pass through because stop() runs before
+        // the opt-out toggle in normal use; toggling opt-out
+        // mid-session is a customer choice that we honour by
+        // dropping subsequent events.
+        if (optOutStore?.overallOptOut == true) return
+        // Snapshot opt-out → drop native_snapshot events only. The
+        // rest of the timeline (taps, network, console) keeps
+        // flowing so the dashboard still shows an interaction
+        // record even though the player stage is empty.
+        if (type == "native_snapshot" && optOutStore?.schematicOptOut == true) return
         val now = System.currentTimeMillis()
         val event = ReplayEvent(
             id = rt.makeEventId(),

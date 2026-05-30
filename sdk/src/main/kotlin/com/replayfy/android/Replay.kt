@@ -150,23 +150,117 @@ object Replay {
         com.replayfy.android.internal.privacy.PrivacyRegistry.remove(view)
     }
 
-    /** Pause schematic capture; events keep flowing. */
+    /**
+     * Pause schematic capture — snapshots stop, taps + network +
+     * console + perf events keep flowing. Useful for screens with
+     * regulated pixel content (HIPAA, banking PIN pad) where the
+     * customer still wants the interaction timeline.
+     *
+     * In-memory only; a process restart resets to running. Use
+     * [Replay.optOutSchematicRecordings] for a durable opt-out.
+     *
+     * Mirrors UXCam's `pauseScreenRecording()`.
+     */
     @JvmStatic
     fun pauseRecording() {
-        ReplayCore.stub("pauseRecording")
+        ReplayCore.setSnapshotPaused(true)
     }
 
-    /** Resume schematic capture after pauseRecording. */
+    /**
+     * Resume schematic capture after [pauseRecording].
+     * Mirrors UXCam's `resumeScreenRecording()`.
+     */
     @JvmStatic
     fun resumeRecording() {
-        ReplayCore.stub("resumeRecording")
+        ReplayCore.setSnapshotPaused(false)
     }
 
-    /** Discard the current session entirely — no upload. */
+    /**
+     * Discard the current session entirely — clears the in-memory
+     * buffer AND deletes any on-disk batches still queued for
+     * upload. The session never reaches the backend.
+     *
+     * Different from [stop] (graceful end + upload). Reach for
+     * this when the user triggers a "delete my activity" / "clear
+     * recent history" flow AFTER content has already been captured.
+     *
+     * Mirrors UXCam's `cancelCurrentSession()`.
+     */
     @JvmStatic
     fun cancelSession() {
-        ReplayCore.stub("cancelSession")
+        ReplayCore.cancelCurrentSession()
     }
+
+    // ------------------------------------------------------------------
+    //  UXCam-parity GDPR opt-in / opt-out
+    // ------------------------------------------------------------------
+
+    /**
+     * Overall opt-out. When set to true: every event drops at the
+     * emit gate, no snapshots fire, no uploads happen. Persisted
+     * across launches via SharedPreferences. The customer MUST
+     * call again with false (or your in-app "rejoin" toggle does)
+     * to start recording again.
+     *
+     * Mirrors UXCam's `optOutOverall()` / `optInOverall()` pair —
+     * we collapse the two into one boolean call since that's the
+     * idiomatic Kotlin / Android shape.
+     */
+    @JvmStatic
+    fun optOutOverall(optOut: Boolean) {
+        ReplayCore.setOverallOptOut(optOut)
+    }
+
+    /** Whether the customer is currently opted out overall. */
+    @JvmStatic
+    fun isOptedOutOverall(): Boolean = ReplayCore.isOverallOptedOut()
+
+    /**
+     * Schematic (snapshot-only) opt-out. When set to true: pixel
+     * capture stops but every other event type keeps flowing.
+     * Persisted across launches.
+     *
+     * Mirrors UXCam's `optOutOfSchematicRecordings()` /
+     * `optIntoSchematicRecordings()`.
+     */
+    @JvmStatic
+    fun optOutSchematicRecordings(optOut: Boolean) {
+        ReplayCore.setSchematicOptOut(optOut)
+    }
+
+    /** Whether schematic (snapshot) recording is currently opted out. */
+    @JvmStatic
+    fun isOptedOutSchematicRecordings(): Boolean = ReplayCore.isSchematicOptedOut()
+
+    // ------------------------------------------------------------------
+    //  UXCam-parity deep-link helpers
+    // ------------------------------------------------------------------
+
+    /**
+     * Returns a URL pointing to the CURRENT session on the Replayfy
+     * dashboard, or null when no session is active.
+     *
+     * Used by feedback flows where the customer wants to attach a
+     * link the support team can click to replay the user's session.
+     *
+     * Derived from [ReplayConfig.apiHost] — `api.replayfy.io` →
+     * `app.replayfy.io/sessions/<sessionId>`. Self-hosted
+     * customers automatically get their own host substituted.
+     *
+     * Mirrors UXCam's `urlForCurrentSession()`.
+     */
+    @JvmStatic
+    fun urlForCurrentSession(): String? = ReplayCore.urlForCurrentSession()
+
+    /**
+     * Returns a URL pointing to the CURRENT user (every session for
+     * the active distinctId) on the dashboard, or null when no
+     * `identify(distinctId)` has been called.
+     *
+     * Mirrors UXCam's `urlForCurrentUser()`.
+     */
+    @JvmStatic
+    fun urlForCurrentUser(): String? = ReplayCore.urlForCurrentUser()
 
     /**
      * Occlude every [android.widget.EditText] in the host app
