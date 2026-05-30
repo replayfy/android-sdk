@@ -73,4 +73,19 @@ data class ReplayConfig(
      * disable this and tag manually for clearer dashboard rows.
      */
     val autoScreenName: Boolean = true,
+
+    /**
+     * Pull configuration from the dashboard's `/v1/sdk/config`
+     * endpoint and let it OVERRIDE the values supplied here. When
+     * true (default), every customer-passed field that maps to a
+     * dashboard setting becomes a fallback used only during the
+     * cold-launch first-fetch race. After the first successful
+     * fetch the dashboard always wins — including subsequent
+     * flips while the session is running (15 min refresh cycle).
+     *
+     * Set to false ONLY when the customer intentionally wants
+     * hard-coded behaviour (kiosk apps, smoke tests, white-label
+     * builds whose dashboard isn't theirs).
+     */
+    val useRemoteConfig: Boolean = true,
 )

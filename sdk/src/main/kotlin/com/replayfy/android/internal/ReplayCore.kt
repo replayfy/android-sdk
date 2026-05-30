@@ -64,6 +64,18 @@ internal object ReplayCore {
     @Volatile private var crashHandler: com.replayfy.android.internal.crash.CrashHandler? = null
     @Volatile private var consoleCapture: com.replayfy.android.internal.console.ConsoleCapture? = null
     @Volatile private var optOutStore: OptOutStore? = null
+    @Volatile private var remoteConfigFetcher: RemoteConfigFetcher? = null
+
+    /** Effective remote config. Null until the first fetch (or
+     *  cached cold-launch apply) completes. Read by samplingGate(),
+     *  shouldDropSessionAtEnd(), and any other code that needs to
+     *  ask "did the dashboard say X?" without a fetch round-trip. */
+    @Volatile private var remoteConfig: RemoteConfig? = null
+
+    /** Per-session sampling decision — flips to true at session
+     *  start when Math.random() > samplingRate (and no override
+     *  applies). When true, [push] silently drops every event. */
+    @Volatile private var sessionSampledOut: Boolean = false
 
     /**
      * Verification listeners — fired after the SDK's first
@@ -331,6 +343,22 @@ internal object ReplayCore {
         // flags so the instance the customer creates can find them.
         com.replayfy.android.internal.network.ReplayInterceptor.currentEmit = ::emitNetwork
         com.replayfy.android.internal.network.ReplayInterceptor.configure(cfg)
+
+        // Remote config fetcher — pulls dashboard settings + applies
+        // them, OVERRIDING the customer-passed values above. Cold
+        // launches use last-known-good from SharedPreferences;
+        // periodic refresh (every 15 min) propagates dashboard flips
+        // mid-session. Customers can opt out via
+        // ReplayConfig.useRemoteConfig=false (kiosk / smoke-test).
+        if (cfg.useRemoteConfig) {
+            val fetcher = RemoteConfigFetcher(
+                context = applicationContext,
+                config = cfg,
+                onApply = ::applyRemoteConfig,
+            )
+            remoteConfigFetcher = fetcher
+            fetcher.start()
+        }
 
         // Build the runtime + emit the session_start event for the
         // current screen. If the app is already in the foreground when
@@ -649,6 +677,96 @@ internal object ReplayCore {
     }
 
     fun isSnapshotPaused(): Boolean = snapshotPaused
+
+    // -----------------------------------------------------------------
+    //  Remote-config apply
+    // -----------------------------------------------------------------
+
+    /** Apply a fresh [RemoteConfig] to the running SDK. Called
+     *  from the fetcher on every successful fetch + once at cold
+     *  launch with the cached value (if any). Idempotent — repeat
+     *  applies of the same config are no-ops at the toggle level
+     *  because we set rather than mutate every flag. */
+    private fun applyRemoteConfig(cfg: RemoteConfig) {
+        android.util.Log.i(TAG, "applyRemoteConfig: capture.network=${cfg.captureNetwork} capture.console=${cfg.captureConsole} sampling=${cfg.samplingRate}")
+        remoteConfig = cfg
+
+        // Console capture — start/stop dynamically. The collector
+        // installs System.out/err interception, idempotent.
+        val ctx = appContext
+        if (cfg.captureConsole) {
+            if (consoleCapture == null && ctx != null) {
+                val cc = com.replayfy.android.internal.console.ConsoleCapture { ev ->
+                    runtime?.let { rt -> push(rt, type = "console", data = ev) }
+                }
+                cc.start()
+                consoleCapture = cc
+            }
+        } else {
+            consoleCapture?.stop()
+            consoleCapture = null
+        }
+
+        // Network capture flags — Interceptor reads from the static
+        // companion every request, so flipping these takes effect on
+        // the next OkHttp call. captureNetwork=false turns the
+        // interceptor into a pass-through (emit=null).
+        com.replayfy.android.internal.network.ReplayInterceptor.enabled = cfg.captureNetwork
+        com.replayfy.android.internal.network.ReplayInterceptor.captureHeaders = cfg.captureNetworkHeaders
+        // bodies: zero out maxBodyBytes when captureNetworkBodies=false
+        // so peekBody returns empty. Customers who set a custom
+        // baseline maxBodyBytes lose it when the dashboard flips off
+        // — that's the override semantic.
+        com.replayfy.android.internal.network.ReplayInterceptor.maxBodyBytes =
+            if (cfg.captureNetworkBodies) 4_096 else 0
+        com.replayfy.android.internal.network.ReplayInterceptor.redactPatterns =
+            cfg.privacyRedactUrlPatterns.mapNotNull {
+                try { Regex(it) } catch (_: Throwable) { null }
+            }
+
+        // Performance metrics — start/stop the manager. Stopping
+        // tears down Choreographer + memory poller + thermal
+        // listener cleanly.
+        if (cfg.capturePerformance) {
+            perfMetrics?.start()
+        } else {
+            perfMetrics?.stop()
+        }
+
+        // Privacy — maskAllInputs maps to occludeAllTextFields(true).
+        // The dashboard's setting is a workspace-level default; the
+        // customer's per-call occludeAllTextFields(false) STILL gets
+        // overridden by a true dashboard value (dashboard always wins).
+        com.replayfy.android.internal.privacy.PrivacyRegistry.occludeAllTextFields =
+            cfg.privacyMaskAllInputs
+    }
+
+    /** Decide whether to sample IN the current session. Called once
+     *  at session_start. Uses a uniform [0,1) random draw against
+     *  the dashboard's samplingRate, with two override gates:
+     *
+     *    - alwaysRecordIdentified: a sender.identity.distinctId
+     *      set BEFORE session_start (from config.distinctId or a
+     *      pre-init identify()) forces sampling in.
+     *    - alwaysRecordErrors: applied retroactively at session
+     *      end — a sampled-out session that DID emit an error gets
+     *      flushed anyway (handled in stop()).
+     *
+     *  When sampled out, the session_start still fires (so the
+     *  dashboard can show "N sessions sampled out today"), but
+     *  every subsequent event is dropped at push() — including
+     *  snapshot uploads. */
+    private fun computeSamplingDecision(): Boolean {
+        val rc = remoteConfig ?: return false // no remote yet → sample in
+        if (rc.samplingRate >= 1.0) return false
+        if (rc.samplingRate <= 0.0) return true
+        // alwaysRecordIdentified override.
+        if (rc.samplingAlwaysRecordIdentified) {
+            val did = sender?.identity?.distinctId
+            if (!did.isNullOrEmpty()) return false
+        }
+        return Math.random() > rc.samplingRate
+    }
 
     // -----------------------------------------------------------------
     //  Session lifecycle controls (UXCam parity)
@@ -1033,6 +1151,11 @@ internal object ReplayCore {
         // but it'll silently no-op once emit is null.
         com.replayfy.android.internal.network.ReplayInterceptor.currentEmit = null
         com.replayfy.android.internal.network.ReplayInterceptor.enabled = false
+        // Stop the remote-config fetcher's periodic poll so we don't
+        // leak a coroutine after the SDK shuts down. The next init()
+        // re-creates the fetcher with the new ReplayConfig.
+        remoteConfigFetcher?.stop()
+        remoteConfigFetcher = null
     }
 
     // -----------------------------------------------------------------
@@ -1138,6 +1261,14 @@ internal object ReplayCore {
             appBuild = appBuildOverride ?: appBuild,
         )
         runtime = rt
+        // Sampling decision — one per session, computed against the
+        // dashboard's samplingRate. Sampled-out sessions emit
+        // session_start (so the dashboard can count them) but then
+        // every subsequent event drops at push().
+        sessionSampledOut = computeSamplingDecision()
+        if (sessionSampledOut) {
+            android.util.Log.i(TAG, "session ${rt.sessionId} sampled out (rate=${remoteConfig?.samplingRate})")
+        }
         // Reset the once-per-session thumbnail flag so the new
         // session's first snapshot fires a fresh upload (not
         // skipped by the previous session's flag).
@@ -1216,6 +1347,23 @@ internal object ReplayCore {
         // flowing so the dashboard still shows an interaction
         // record even though the player stage is empty.
         if (type == "native_snapshot" && optOutStore?.schematicOptOut == true) return
+        // Sampling drop. session_start + session_end ALWAYS go
+        // through (so the dashboard's sampled-out count is
+        // accurate); everything in between drops silently.
+        if (sessionSampledOut && type != "session_start" && type != "session_end") {
+            // alwaysRecordErrors retroactive override — let crashes
+            // through even on sampled-out sessions so the customer
+            // can debug them. The flag flips for the rest of the
+            // session so subsequent taps + perf events also land
+            // (without context the stack alone isn't actionable).
+            val rc = remoteConfig
+            if (rc?.samplingAlwaysRecordErrors == true && type == "error") {
+                android.util.Log.i(TAG, "sampled-out session unmuted by alwaysRecordErrors")
+                sessionSampledOut = false
+            } else {
+                return
+            }
+        }
         val now = System.currentTimeMillis()
         val event = ReplayEvent(
             id = rt.makeEventId(),
