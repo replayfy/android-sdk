@@ -1,8 +1,11 @@
 package com.replayfy.android
 
+import android.app.Application
 import android.content.Context
 import android.view.View
 import com.replayfy.android.internal.ReplayCore
+import com.replayfy.android.internal.mobile.MobileEngine
+import org.json.JSONObject
 
 /**
  * Public entry point for the Replay Android SDK.
@@ -34,7 +37,11 @@ object Replay {
      */
     @JvmStatic
     fun init(context: Context, config: ReplayConfig) {
-        ReplayCore.init(context.applicationContext, config)
+        // Reference-parity mobile recording engine: periodic JPEG frames
+        // + binary message protocol → /v1/mobile/*. Replaces the legacy
+        // per-snapshot/asset engine (no backward compatibility).
+        val app = context.applicationContext as? Application ?: return
+        MobileEngine.shared.start(app, config.apiKey, config.apiHost)
     }
 
     /**
@@ -50,7 +57,7 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun identify(distinctId: String, properties: Map<String, Any?>? = null) {
-        ReplayCore.identify(distinctId, properties)
+        MobileEngine.shared.setUserId(distinctId)
     }
 
     /**
@@ -65,7 +72,8 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun track(name: String, properties: Map<String, Any?>? = null) {
-        ReplayCore.track(name, properties)
+        val payload = if (properties != null) JSONObject(properties).toString() else ""
+        MobileEngine.shared.sendEvent(name, payload)
     }
 
     /**
