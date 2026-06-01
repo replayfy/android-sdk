@@ -32,6 +32,20 @@ class MobileEngine private constructor() {
     private var perf: MobilePerfMonitor? = null
     private val startExecutor = Executors.newSingleThreadExecutor()
 
+    /**
+     * Messages emitted before the async `/start` round-trip completes
+     * (the launch screen's viewComponent, or an `identify` / `track` /
+     * `log` made in the host's `onCreate`) are queued here and drained
+     * into the collector once the session token arrives. The reference
+     * tracker buffers pre-start messages the same way — without this
+     * they'd be dropped because `collector` is still null. Guarded by its
+     * own monitor and bounded so a never-completing `/start` can't grow
+     * it without limit.
+     */
+    private val preStart = ArrayList<ByteArray>()
+    @Volatile private var ready = false
+    @Volatile private var started = false
+
     @Volatile private var currentActivity: Activity? = null
     @Volatile var sessionId: String? = null
         private set
@@ -42,12 +56,20 @@ class MobileEngine private constructor() {
     var privacyRectsProvider: () -> List<Rect> = { emptyList() }
 
     fun start(app: Application, projectKey: String, host: String) {
+        // Idempotent: a second Replay.init (e.g. on an Activity recreate)
+        // must not wire a second collector / screenshot timer / perf
+        // sampler onto the same singleton.
+        if (started) return
+        started = true
         app.registerActivityLifecycleCallbacks(activityCallbacks)
         val transport = MobileTransport(host, projectKey)
         this.transport = transport
 
         startExecutor.execute {
-            val resp = transport.start(deviceParams(app, projectKey)) ?: return@execute
+            val resp = transport.start(deviceParams(app, projectKey)) ?: run {
+                started = false // allow a later retry if /start failed
+                return@execute
+            }
             sessionId = resp.sessionID
             startedAt = System.currentTimeMillis()
 
@@ -74,6 +96,28 @@ class MobileEngine private constructor() {
             currentActivity?.let { touch.attach(it) }
             // Uncaught-exception crash reporting.
             MobileCrashHandler.install { name, reason, stack -> sendCrash(name, reason, stack) }
+
+            // Drain anything queued during the /start round-trip, then go
+            // live. Holding the monitor across the flip keeps a concurrent
+            // enqueue() from racing past the drain and losing its message.
+            synchronized(preStart) {
+                preStart.forEach { collector.add(it) }
+                preStart.clear()
+                ready = true
+            }
+        }
+    }
+
+    /**
+     * Hand a message to the collector if the session is live, otherwise
+     * buffer it until [start]'s drain runs. Bounded at 1000 to cap the
+     * worst case where `/start` never returns.
+     */
+    private fun enqueue(msg: ByteArray) {
+        synchronized(preStart) {
+            val c = collector
+            if (ready && c != null) c.add(msg)
+            else if (preStart.size < 1000) preStart.add(msg)
         }
     }
 
@@ -86,27 +130,27 @@ class MobileEngine private constructor() {
 
     // ── Message API (called by listeners) ────────────────────────────
     fun sendClick(label: String, x: Long, y: Long) =
-        collector?.add(MobileWire.click(label, x, y, now()))
+        enqueue(MobileWire.click(label, x, y, now()))
     fun sendSwipe(label: String, x: Long, y: Long, direction: String) =
-        collector?.add(MobileWire.swipe(label, x, y, direction, now()))
+        enqueue(MobileWire.swipe(label, x, y, direction, now()))
     fun sendInput(value: String, masked: Boolean, label: String) =
-        collector?.add(MobileWire.input(value, masked, label, now()))
+        enqueue(MobileWire.input(value, masked, label, now()))
     fun sendPerformance(name: String, value: Long) =
-        collector?.add(MobileWire.performance(name, value, now()))
+        enqueue(MobileWire.performance(name, value, now()))
     fun sendLog(severity: String, content: String) =
-        collector?.add(MobileWire.log(severity, content, now()))
+        enqueue(MobileWire.log(severity, content, now()))
     fun sendNetwork(type: String, method: String, url: String, request: String, response: String, status: Long, duration: Long) =
-        collector?.add(MobileWire.networkCall(type, method, url, request, response, status, duration, now()))
+        enqueue(MobileWire.networkCall(type, method, url, request, response, status, duration, now()))
     fun sendCrash(name: String, reason: String, stacktrace: String) {
-        collector?.add(MobileWire.crash(name, reason, stacktrace, now()))
+        enqueue(MobileWire.crash(name, reason, stacktrace, now()))
         collector?.flush()
     }
     fun sendScreen(screenName: String, viewName: String, visible: Boolean) =
-        collector?.add(MobileWire.viewComponent(screenName, viewName, visible, now()))
+        enqueue(MobileWire.viewComponent(screenName, viewName, visible, now()))
     fun sendEvent(name: String, payload: String) =
-        collector?.add(MobileWire.event(name, payload, now()))
+        enqueue(MobileWire.event(name, payload, now()))
     fun setUserId(id: String) =
-        collector?.add(MobileWire.userId(id, now()))
+        enqueue(MobileWire.userId(id, now()))
 
     private fun now() = System.currentTimeMillis()
 

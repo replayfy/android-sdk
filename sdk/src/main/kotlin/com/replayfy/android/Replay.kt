@@ -133,6 +133,9 @@ object Replay {
     @JvmStatic
     fun tagScreenName(name: String) {
         ReplayCore.setRoute(name)
+        // Manual screen tag → viewComponent message, same as the
+        // Activity auto-tagger, so the dashboard Screens tab reflects it.
+        MobileEngine.shared.sendScreen(name, name, true)
     }
 
     /**
@@ -640,5 +643,7 @@ object Replay {
     @JvmOverloads
     fun log(level: String, message: String, stack: String? = null) {
         ReplayCore.logExplicit(level = level, message = message, stack = stack)
+        // Bridge into the binary message stream → dashboard console tab.
+        MobileEngine.shared.sendLog(level, if (stack != null) "$message\n$stack" else message)
     }
 }
