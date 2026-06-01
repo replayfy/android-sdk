@@ -160,8 +160,18 @@ static void write_record(int signo, siginfo_t *info) {
     // Thread name (best effort). pthread_getname_np is NOT documented
     // as async-signal-safe on Android but in practice the bionic impl
     // just reads /proc/self/task/<tid>/comm which is safe.
+    // Read the thread name straight from /proc/self/comm. This is
+    // async-signal-safe (open/read/close are) and, unlike
+    // pthread_getname_np, isn't gated behind API 26 in bionic.
     char thread_name[16] = {0};
-    pthread_getname_np(pthread_self(), thread_name, sizeof(thread_name));
+    int tn_fd = open("/proc/self/comm", O_RDONLY);
+    if (tn_fd >= 0) {
+        ssize_t tn_r = read(tn_fd, thread_name, sizeof(thread_name) - 1);
+        close(tn_fd);
+        for (ssize_t i = 0; i < tn_r; ++i) {
+            if (thread_name[i] == '\n') { thread_name[i] = 0; break; }
+        }
+    }
     // Strip any pipes that could confuse the parser (paranoia).
     for (size_t i = 0; i < sizeof(thread_name) && thread_name[i]; ++i) {
         if (thread_name[i] == '|') thread_name[i] = '_';
@@ -270,6 +280,7 @@ int replay_install_signal_handler(const char *path) {
 JNIEXPORT jboolean JNICALL
 Java_com_replayfy_android_internal_crash_NativeCrashHandler_nativeInstall(
     JNIEnv *env, jclass clazz, jstring jpath) {
+    (void)clazz;
     if (!jpath) return JNI_FALSE;
     const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);
     if (!path) return JNI_FALSE;
