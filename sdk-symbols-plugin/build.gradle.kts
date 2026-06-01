@@ -37,10 +37,9 @@ java {
     withJavadocJar()
 }
 
-repositories {
-    google()
-    mavenCentral()
-}
+// Dependency repositories come from settings.gradle.kts
+// (dependencyResolutionManagement, FAIL_ON_PROJECT_REPOS) — declaring
+// them here too is both redundant and rejected by that mode.
 
 dependencies {
     // AGP compile-only — customers bring their own version. We
