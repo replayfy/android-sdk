@@ -29,6 +29,7 @@ class MobileEngine private constructor() {
     private var collector: MobileCollector? = null
     private var screenshots: MobileScreenshots? = null
     private var touch: MobileTouchCapture? = null
+    private var perf: MobilePerfMonitor? = null
     private val startExecutor = Executors.newSingleThreadExecutor()
 
     @Volatile private var currentActivity: Activity? = null
@@ -60,18 +61,25 @@ class MobileEngine private constructor() {
                 if (isSwipe) sendSwipe(label, x, y, direction) else sendClick(label, x, y)
             }
 
+            val perf = MobilePerfMonitor(app) { name, value -> sendPerformance(name, value) }
+
             this.collector = collector
             this.screenshots = screenshots
             this.touch = touch
+            this.perf = perf
 
             collector.start()
             screenshots.start()
+            perf.start()
             currentActivity?.let { touch.attach(it) }
+            // Uncaught-exception crash reporting.
+            MobileCrashHandler.install { name, reason, stack -> sendCrash(name, reason, stack) }
         }
     }
 
     fun stop() {
         screenshots?.stop(); screenshots = null
+        perf?.stop(); perf = null
         collector?.stop(); collector = null
         sessionId = null
     }
@@ -107,6 +115,10 @@ class MobileEngine private constructor() {
         override fun onActivityResumed(activity: Activity) {
             currentActivity = activity
             touch?.attach(activity)
+            // Screen tracking → viewComponent message with the activity
+            // class name (drives the dashboard Screens tab + route).
+            val name = activity.javaClass.simpleName
+            sendScreen(name, name, true)
         }
         override fun onActivityPaused(activity: Activity) {
             if (currentActivity === activity) {
