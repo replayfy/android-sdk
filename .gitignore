@@ -27,3 +27,7 @@ captures/
 *.keystore
 *.jks
 !debug.keystore
+
+# NDK build output
+.cxx/
+sdk/.cxx/
