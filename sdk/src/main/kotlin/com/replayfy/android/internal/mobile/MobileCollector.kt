@@ -70,4 +70,33 @@ class MobileCollector(private val transport: MobileTransport) {
             }
         }
     }
+
+    /**
+     * Synchronous flush on the CALLING thread — used by the crash handler
+     * so the crash message reaches the server before the process is torn
+     * down (an async [flush] would be killed mid-send). Sends via the
+     * un-gzipped /late path; bounded by the transport's socket timeout.
+     */
+    fun flushBlocking() {
+        val batch = ArrayList<ByteArray>()
+        val startIndex: Long
+        synchronized(lock) {
+            if (waiting.isEmpty()) return
+            batch.addAll(waiting); waiting.clear()
+            startIndex = nextIndex; nextIndex += batch.size
+        }
+        val content = ByteArrayOutputStream()
+        content.write(MobileWire.batchMeta(startIndex, System.currentTimeMillis()))
+        for (m in batch) content.write(m)
+        val raw = content.toByteArray()
+        // The crash handler runs on the main thread; a direct network call
+        // there throws NetworkOnMainThreadException. Send on the background
+        // sender and block the caller (up to 3s) until it completes.
+        val done = java.util.concurrent.CountDownLatch(1)
+        sender.execute {
+            try { transport.sendLateMessages(raw) } catch (_: Throwable) {}
+            done.countDown()
+        }
+        try { done.await(3, TimeUnit.SECONDS) } catch (_: Throwable) {}
+    }
 }

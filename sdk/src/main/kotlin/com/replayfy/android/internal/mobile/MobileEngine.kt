@@ -52,6 +52,10 @@ class MobileEngine private constructor() {
     @Volatile var startedAt: Long = 0
         private set
 
+    // Dashboard-controlled capture toggles, set from the /start response.
+    @Volatile private var captureConsole = true
+    @Volatile private var captureNetwork = true
+
     /** Sensitive decor-view-coordinate rects to mask in screenshots. */
     var privacyRectsProvider: () -> List<Rect> = { emptyList() }
 
@@ -72,6 +76,8 @@ class MobileEngine private constructor() {
             }
             sessionId = resp.sessionID
             startedAt = System.currentTimeMillis()
+            captureConsole = resp.captureConsole
+            captureNetwork = resp.captureNetwork
 
             val collector = MobileCollector(transport)
             val screenshots = MobileScreenshots(
@@ -137,13 +143,17 @@ class MobileEngine private constructor() {
         enqueue(MobileWire.input(value, masked, label, now()))
     fun sendPerformance(name: String, value: Long) =
         enqueue(MobileWire.performance(name, value, now()))
-    fun sendLog(severity: String, content: String) =
-        enqueue(MobileWire.log(severity, content, now()))
-    fun sendNetwork(type: String, method: String, url: String, request: String, response: String, status: Long, duration: Long) =
-        enqueue(MobileWire.networkCall(type, method, url, request, response, status, duration, now()))
+    fun sendLog(severity: String, content: String) {
+        if (captureConsole) enqueue(MobileWire.log(severity, content, now()))
+    }
+    fun sendNetwork(type: String, method: String, url: String, request: String, response: String, status: Long, duration: Long) {
+        if (captureNetwork) enqueue(MobileWire.networkCall(type, method, url, request, response, status, duration, now()))
+    }
     fun sendCrash(name: String, reason: String, stacktrace: String) {
         enqueue(MobileWire.crash(name, reason, stacktrace, now()))
-        collector?.flush()
+        // Synchronous — the process is about to die; an async flush wouldn't
+        // finish sending.
+        collector?.flushBlocking()
     }
     fun sendScreen(screenName: String, viewName: String, visible: Boolean) =
         enqueue(MobileWire.viewComponent(screenName, viewName, visible, now()))
@@ -159,6 +169,8 @@ class MobileEngine private constructor() {
         override fun onActivityResumed(activity: Activity) {
             currentActivity = activity
             touch?.attach(activity)
+            // Resume screen capture on return to foreground.
+            screenshots?.resume()
             // Screen tracking → viewComponent message with the activity
             // class name (drives the dashboard Screens tab + route).
             val name = activity.javaClass.simpleName
@@ -167,7 +179,10 @@ class MobileEngine private constructor() {
         override fun onActivityPaused(activity: Activity) {
             if (currentActivity === activity) {
                 sendPerformance("background", 1)
-                screenshots?.flush()
+                // Pause capture while backgrounded — shooting an invisible
+                // window just inflates the archive (and wastes storage +
+                // bandwidth). pause() flushes what's pending.
+                screenshots?.pause()
                 collector?.flush()
             }
         }

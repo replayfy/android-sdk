@@ -14,6 +14,9 @@ data class MobileStartResponse(
     val framesSupport: Boolean,
     val projectID: String,
     val userUUID: String,
+    // Dashboard-controlled capture toggles (server-authoritative).
+    val captureConsole: Boolean = true,
+    val captureNetwork: Boolean = true,
 )
 
 /**
@@ -46,6 +49,8 @@ class MobileTransport(host: String, private val projectKey: String) {
                 framesSupport = data.optBoolean("framesSupport", true),
                 projectID = data.optString("projectID", ""),
                 userUUID = data.optString("userUUID", ""),
+                captureConsole = data.optBoolean("captureConsole", true),
+                captureNetwork = data.optBoolean("captureNetwork", true),
             )
             token = parsed.token
             parsed

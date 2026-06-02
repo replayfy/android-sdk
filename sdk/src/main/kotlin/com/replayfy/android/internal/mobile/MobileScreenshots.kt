@@ -69,6 +69,23 @@ class MobileScreenshots(
         flush()
     }
 
+    /** Suspend capture while the app is backgrounded (no point shooting an
+     *  invisible window — it just inflates the archive). Flushes what's
+     *  pending so nothing is lost. */
+    fun pause() {
+        if (!running) return
+        running = false
+        main.removeCallbacks(tick)
+        flush()
+    }
+
+    /** Resume capture when the app returns to the foreground. */
+    fun resume() {
+        if (running) return
+        running = true
+        main.post(tick)
+    }
+
     private fun capture() {
         val activity = activityProvider() ?: return
         val view = activity.window?.decorView ?: return
