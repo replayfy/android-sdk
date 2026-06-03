@@ -35,7 +35,7 @@ class MenuActivity : AppCompatActivity() {
         Replay.init(
             this,
             ReplayConfig(
-                apiKey = "mobiletest123",
+                apiKey = "rpl_pk_ef7e2fc8c7f952bcd0a69466e1a42a0625f9",
                 apiHost = "http://10.0.2.2:4000",
                 captureSnapshotPixels = true,
             ),

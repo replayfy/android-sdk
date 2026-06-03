@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.DisplayMetrics
+import com.replayfy.android.internal.privacy.PrivacyRegistry
 import org.json.JSONObject
 import java.util.concurrent.Executors
 
@@ -30,6 +31,11 @@ class MobileEngine private constructor() {
     private var screenshots: MobileScreenshots? = null
     private var touch: MobileTouchCapture? = null
     private var perf: MobilePerfMonitor? = null
+    // Live-presence socket (mirrors the web SDK's presence.ts): keeps this
+    // session on the dashboard's online list for its lifetime; the backend
+    // LiveGateway flips the EndUser online on connect / offline 10s after
+    // disconnect. Best-effort — never blocks capture.
+    private var presence: MobilePresence? = null
     private val startExecutor = Executors.newSingleThreadExecutor()
 
     /**
@@ -48,6 +54,13 @@ class MobileEngine private constructor() {
 
     @Volatile private var currentActivity: Activity? = null
     @Volatile var sessionId: String? = null
+    // Project key + ingest host, kept so the presence socket can authenticate
+    // with the same credentials as the HTTP transport.
+    @Volatile private var projectKey: String? = null
+    @Volatile private var host: String? = null
+    // Last identified distinct id (from identify → setUserId). Passed to the
+    // presence socket so the dashboard attaches this session to the right user.
+    @Volatile private var distinctId: String? = null
         private set
     @Volatile var startedAt: Long = 0
         private set
@@ -65,6 +78,8 @@ class MobileEngine private constructor() {
         // sampler onto the same singleton.
         if (started) return
         started = true
+        this.projectKey = projectKey
+        this.host = host
         app.registerActivityLifecycleCallbacks(activityCallbacks)
         val transport = MobileTransport(host, projectKey)
         this.transport = transport
@@ -74,10 +89,42 @@ class MobileEngine private constructor() {
                 started = false // allow a later retry if /start failed
                 return@execute
             }
+            // Server sampling gate dropped this launch — do not record. Leave
+            // `started` true so we don't re-roll on a spurious re-init.
+            if (!resp.record) return@execute
             sessionId = resp.sessionID
             startedAt = System.currentTimeMillis()
             captureConsole = resp.captureConsole
             captureNetwork = resp.captureNetwork
+
+            // Open the live-presence socket now that we have a session id. Uses
+            // the distinct id known so far (identify() called before /start
+            // completed sets it); identify() afterwards calls updateDistinctId.
+            presence = MobilePresence().also {
+                it.start(host, projectKey, resp.sessionID, distinctId)
+            }
+
+            // Wire screenshot privacy masking to the PrivacyRegistry — the
+            // same collectors the legacy capture path consults. Without this
+            // the frames screenshotter masks nothing: addPrivacyView,
+            // occludeAll*, applyOcclusion, occludeSensitiveScreen and the
+            // bridge rects all register correctly but never reach the JPEGs.
+            // Invoked once per frame on the capture (main) thread, so the
+            // View-tree walk is safe.
+            privacyRectsProvider = provider@{
+                val root = currentActivity?.window?.decorView ?: return@provider emptyList()
+                if (PrivacyRegistry.occludeAllScreen) {
+                    // Whole-screen occlude (occludeSensitiveScreen): one box over
+                    // the whole decor view. Drain any pending bridge rects so they
+                    // don't bleed into a later non-full-screen frame.
+                    PrivacyRegistry.consumePendingFrameRects()
+                    return@provider listOf(Rect(0, 0, root.width, root.height))
+                }
+                PrivacyRegistry.sensitiveBounds(root) +
+                    PrivacyRegistry.bulkBounds(root) +
+                    PrivacyRegistry.composeBoundsRelativeTo(root) +
+                    PrivacyRegistry.consumePendingFrameRects()
+            }
 
             val collector = MobileCollector(transport)
             val screenshots = MobileScreenshots(
@@ -131,6 +178,7 @@ class MobileEngine private constructor() {
         screenshots?.stop(); screenshots = null
         perf?.stop(); perf = null
         collector?.stop(); collector = null
+        presence?.stop(); presence = null
         sessionId = null
     }
 
@@ -159,8 +207,13 @@ class MobileEngine private constructor() {
         enqueue(MobileWire.viewComponent(screenName, viewName, visible, now()))
     fun sendEvent(name: String, payload: String) =
         enqueue(MobileWire.event(name, payload, now()))
-    fun setUserId(id: String) =
+    fun setUserId(id: String) {
+        distinctId = id
+        presence?.updateDistinctId(id)
         enqueue(MobileWire.userId(id, now()))
+    }
+    fun sendMetadata(key: String, value: String) =
+        enqueue(MobileWire.metadata(key, value, now()))
 
     private fun now() = System.currentTimeMillis()
 
@@ -215,6 +268,9 @@ class MobileEngine private constructor() {
             put("timezone", timezone())
             put("width", dm.widthPixels)
             put("height", dm.heightPixels)
+            // If identify() ran before start, send the id so the sampling gate
+            // can honour alwaysRecordIdentified.
+            distinctId?.let { put("distinctId", it) }
         }
     }
 

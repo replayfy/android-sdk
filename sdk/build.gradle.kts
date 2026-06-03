@@ -17,6 +17,10 @@ android {
     defaultConfig {
         minSdk = 21
 
+        // Instrumented-test runner (development only — stripped from the
+        // published AAR). Used by the privacy-masking on-device test.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         // SDK version baked into the user-agent the host app sends with
         // every batch. Bump in tandem with git tags.
         buildConfigField("String", "SDK_VERSION", "\"0.0.1\"")
@@ -77,6 +81,9 @@ android {
     sourceSets {
         getByName("main") {
             kotlin.srcDirs("src/main/kotlin")
+        }
+        getByName("androidTest") {
+            kotlin.srcDirs("src/androidTest/kotlin")
         }
     }
 
@@ -207,6 +214,21 @@ dependencies {
     // the worker.
     implementation(libs.androidx.work.runtime)
 
+    // Socket.IO client — backs the live-presence channel (MobilePresence),
+    // the mobile counterpart of the web SDK's socket. `org.json` is provided
+    // by the Android platform, so we exclude the bundled copy to avoid a
+    // duplicate-class clash at packaging time.
+    implementation("io.socket:socket.io-client:2.1.0") {
+        exclude(group = "org.json", module = "json")
+    }
+
     // @Nullable / @NonNull annotations for the public Java-facing API.
     compileOnly(libs.androidx.annotation)
+
+    // Instrumented tests (development only — stripped from the published
+    // AAR). Drive the privacy-masking on-device verification.
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test:core:1.5.0")
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    androidTestImplementation("androidx.test:rules:1.5.0")
 }

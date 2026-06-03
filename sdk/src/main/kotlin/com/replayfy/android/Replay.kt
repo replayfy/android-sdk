@@ -58,6 +58,12 @@ object Replay {
     @JvmOverloads
     fun identify(distinctId: String, properties: Map<String, Any?>? = null) {
         MobileEngine.shared.setUserId(distinctId)
+        // Each property rides as its own metadata(92) message — the backend
+        // promotes plan/email/name to EndUser columns and keeps the rest as
+        // custom properties, mirroring the web identify path.
+        properties?.forEach { (key, value) ->
+            if (value != null) MobileEngine.shared.sendMetadata(key, value.toString())
+        }
     }
 
     /**

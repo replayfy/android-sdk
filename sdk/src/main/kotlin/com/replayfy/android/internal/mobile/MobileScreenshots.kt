@@ -92,36 +92,44 @@ class MobileScreenshots(
         val w = view.width; val h = view.height
         if (w <= 0 || h <= 0) return
 
+        // Resolve sensitive rects HERE, on the main thread — `capture` always
+        // runs on the main looper, whereas `encode` runs on the PixelCopy
+        // background thread where walking the View tree is unsafe. Computing
+        // now also keeps the boxes aligned with the pixels PixelCopy is about
+        // to grab. If the privacy lookup throws, skip the whole frame rather
+        // than ship an unmasked one.
+        val rects = try { privacyRects() } catch (e: Throwable) { return }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             try {
                 PixelCopy.request(activity.window, bmp, { result ->
-                    if (result == PixelCopy.SUCCESS) encode(bmp) else { bmp.recycle(); drawFallback(view, w, h) }
+                    if (result == PixelCopy.SUCCESS) encode(bmp, rects) else { bmp.recycle(); drawFallback(view, w, h, rects) }
                 }, pixelCopyHandler)
             } catch (e: Throwable) {
-                bmp.recycle(); drawFallback(view, w, h)
+                bmp.recycle(); drawFallback(view, w, h, rects)
             }
         } else {
-            drawFallback(view, w, h)
+            drawFallback(view, w, h, rects)
         }
     }
 
-    private fun drawFallback(view: View, w: Int, h: Int) {
+    private fun drawFallback(view: View, w: Int, h: Int, rects: List<Rect>) {
         try {
             val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             view.draw(Canvas(bmp))
-            encode(bmp)
+            encode(bmp, rects)
         } catch (e: Throwable) { /* skip frame */ }
     }
 
-    private fun encode(bmp: Bitmap) {
+    private fun encode(bmp: Bitmap, rects: List<Rect>) {
         try {
             val sw = (bmp.width * targetScale).toInt().coerceAtLeast(1)
             val sh = (bmp.height * targetScale).toInt().coerceAtLeast(1)
             val scaled = if (sw != bmp.width) Bitmap.createScaledBitmap(bmp, sw, sh, true) else bmp
 
-            // Mask sensitive rects with a solid box.
-            val rects = privacyRects()
+            // Mask sensitive rects with a solid box (rects were resolved on the
+            // main thread in `capture`, in unscaled decor-view coords).
             if (rects.isNotEmpty()) {
                 val c = Canvas(scaled)
                 val p = Paint().apply { color = Color.DKGRAY }

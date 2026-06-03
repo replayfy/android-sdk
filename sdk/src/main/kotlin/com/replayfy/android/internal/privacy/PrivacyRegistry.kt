@@ -189,21 +189,21 @@ internal object PrivacyRegistry {
     /**
      * Enumerate ALL views in the [root] tree whose class matches a
      * currently-enabled bulk-privacy flag (EditText if
-     * `occludeAllTextFields`, TextView if `occludeAllTextViews`).
+     * `occludeAllTextFields`, TextView if `occludeAllTextViews`),
+     * a registered occluded class, OR is a password [EditText].
      * Used by BitmapCapture to paint stripe overlays over the
      * matching regions in the captured bitmap.
      *
      * Walks the tree once; cost is O(views-in-tree) per snapshot
      * which is the same order as ViewTreeSerializer's tree-walk
-     * (negligible vs the bitmap-encode cost). Skipped entirely
-     * when neither flag is set — zero overhead for customers not
-     * using bulk privacy.
+     * (negligible vs the bitmap-encode cost). Always walks — password
+     * fields are masked unconditionally (see [isPasswordField]), so we
+     * can't early-return even when no bulk flag / class is set.
      */
     fun bulkBounds(root: View): List<Rect> {
         val wantFields = occludeAllTextFields
         val wantViews = occludeAllTextViews
         val hasClassFilter = occludedClasses.isNotEmpty()
-        if (!wantFields && !wantViews && !hasClassFilter) return emptyList()
         val out = ArrayList<Rect>()
         val rootLoc = IntArray(2).also { root.getLocationOnScreen(it) }
         walkBulk(root, rootLoc, wantFields, wantViews, hasClassFilter, out)
@@ -228,7 +228,12 @@ internal object PrivacyRegistry {
             // Per-class occlusion (applyOcclusion). Wrapped in the
             // cached flag so empty-set apps don't pay the
             // instanceof loop cost on every view.
-            (hasClassFilter && matchesOccludedClass(view))
+            (hasClassFilter && matchesOccludedClass(view)) ||
+            // Password inputs are ALWAYS masked, regardless of the
+            // occludeAll* flags — matches the web SDK's always-on
+            // password protection. Cheap: the EditText instanceof
+            // check short-circuits for every non-input view.
+            isPasswordField(view)
         if (matches) {
             val loc = IntArray(2).also { view.getLocationOnScreen(it) }
             out.add(
@@ -249,6 +254,35 @@ internal object PrivacyRegistry {
                 val child = view.getChildAt(i) ?: continue
                 walkBulk(child, rootLoc, wantFields, wantViews, hasClassFilter, out)
             }
+        }
+    }
+
+    /**
+     * Whether [view] is an [android.widget.EditText] configured for
+     * password entry. Such fields are masked unconditionally —
+     * independent of the occludeAll* flags — so the captured frame
+     * never carries the typed secret, even before the customer wires
+     * any privacy API. Matches the web SDK's always-on password
+     * masking and the iOS `isSecureTextEntry` default.
+     *
+     * Reads the input-type CLASS + VARIATION bits (the variation is
+     * only meaningful within its class) so we don't mis-flag, e.g., a
+     * generic number field whose low bits coincide with the text-class
+     * password variation value.
+     */
+    private fun isPasswordField(view: View): Boolean {
+        if (view !is android.widget.EditText) return false
+        val type = view.inputType
+        val cls = type and android.text.InputType.TYPE_MASK_CLASS
+        val variation = type and android.text.InputType.TYPE_MASK_VARIATION
+        return when (cls) {
+            android.text.InputType.TYPE_CLASS_TEXT ->
+                variation == android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+                    variation == android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
+                    variation == android.text.InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
+            android.text.InputType.TYPE_CLASS_NUMBER ->
+                variation == android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            else -> false
         }
     }
 

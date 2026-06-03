@@ -17,6 +17,9 @@ data class MobileStartResponse(
     // Dashboard-controlled capture toggles (server-authoritative).
     val captureConsole: Boolean = true,
     val captureNetwork: Boolean = true,
+    // false ⇒ the server's sampling gate dropped this session; the SDK
+    // must not record. Distinct from a null response (network failure).
+    val record: Boolean = true,
 )
 
 /**
@@ -42,15 +45,17 @@ class MobileTransport(host: String, private val projectKey: String) {
             // Response envelope: { ok, data: {...}, meta }
             val data = JSONObject(String(resp, Charsets.UTF_8)).getJSONObject("data")
             val parsed = MobileStartResponse(
-                token = data.getString("token"),
-                sessionID = data.getString("sessionID"),
-                fps = data.getInt("fps"),
-                quality = data.getString("quality"),
+                token = data.optString("token", ""),
+                sessionID = data.optString("sessionID", ""),
+                fps = data.optInt("fps", 0),
+                quality = data.optString("quality", ""),
                 framesSupport = data.optBoolean("framesSupport", true),
                 projectID = data.optString("projectID", ""),
                 userUUID = data.optString("userUUID", ""),
                 captureConsole = data.optBoolean("captureConsole", true),
                 captureNetwork = data.optBoolean("captureNetwork", true),
+                // false ⇒ server sampling gate dropped this launch.
+                record = data.optBoolean("record", true),
             )
             token = parsed.token
             parsed
