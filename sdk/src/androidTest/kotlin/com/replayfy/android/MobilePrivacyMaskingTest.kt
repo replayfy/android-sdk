@@ -6,9 +6,11 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
+import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.TextView
@@ -126,6 +128,19 @@ class MaskTestActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Force the activity to show + resume even over a locked / asleep
+        // emulator screen — otherwise it never reaches RESUMED and
+        // ActivityScenario.launch blocks forever (the test hang).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD,
+        )
         val root = FrameLayout(this).apply { setBackgroundColor(Color.WHITE) }
 
         control = TextView(this).apply {

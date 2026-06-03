@@ -16,6 +16,12 @@ android {
 
     defaultConfig {
         minSdk = 21
+        // targetSdk only affects the dev androidTest APK (a library AAR has no
+        // effective targetSdk — the host app's wins). Without it the test APK
+        // inherits minSdk 21, and on Android 6+ a <23-target app triggers the
+        // legacy runtime-permission ReviewPermissionsActivity, which launches
+        // over the test activity so it never RESUMEs and ActivityScenario hangs.
+        targetSdk = 35
 
         // Instrumented-test runner (development only — stripped from the
         // published AAR). Used by the privacy-masking on-device test.
