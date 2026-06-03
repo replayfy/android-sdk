@@ -8,9 +8,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import java.util.Locale
 import com.replayfy.android.BuildConfig
 import com.replayfy.android.ReplayConfig
-import com.replayfy.android.internal.capture.AssetUploader
 import com.replayfy.android.internal.capture.SnapshotCapture
-import com.replayfy.android.internal.capture.ThumbnailUploader
 import com.replayfy.android.internal.tracker.TapTracker
 import com.replayfy.android.internal.upload.BatchUploader
 import kotlinx.coroutines.CoroutineScope
@@ -318,18 +316,11 @@ internal object ReplayCore {
             consoleCapture = null
         }
 
-        // Now that we have an apiKey + apiHost, the snapshot pipeline
-        // can upload bitmap assets. Wire the uploader + thumbnail
-        // uploader + the pixels-capture flag (defaults true; remote
-        // config may flip it off later).
+        // Wire the snapshot pipeline's cadence + kick off the periodic
+        // loop. (Legacy bitmap-asset + thumbnail upload was removed with
+        // the /v1/replay/assets + /v1/replay/thumbnail endpoints — this
+        // path now emits tree-only snapshots.)
         snapshotCapture?.let { snap ->
-            snap.assetUploader = AssetUploader(cfg)
-            snap.thumbnailUploader = ThumbnailUploader(cfg)
-            snap.captureBitmaps = cfg.captureSnapshotPixels
-            // Provide current sessionId at snapshot time — ensures
-            // the thumbnail upload targets the live session even
-            // after background→foreground rotations.
-            snap.sessionIdProvider = { runtime?.sessionId }
             // Honor the customer's snapshot cadence preference;
             // remote config can re-tune this mid-session.
             snap.periodicIntervalMs = cfg.snapshotIntervalMs.coerceAtLeast(200L)
@@ -1323,10 +1314,6 @@ internal object ReplayCore {
         if (sessionSampledOut) {
             android.util.Log.i(TAG, "session ${rt.sessionId} sampled out (rate=${remoteConfig?.samplingRate})")
         }
-        // Reset the once-per-session thumbnail flag so the new
-        // session's first snapshot fires a fresh upload (not
-        // skipped by the previous session's flag).
-        snapshotCapture?.thumbnailUploader?.reset()
         // Reset the per-session screen-dedup memo so the first
         // setRoute call after a new session ships even if the
         // route happens to match the last session's last screen.
