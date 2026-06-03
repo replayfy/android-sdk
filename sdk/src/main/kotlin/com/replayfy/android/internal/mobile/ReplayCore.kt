@@ -14,16 +14,16 @@ import java.util.concurrent.Executors
 /**
  * Orchestrates the reference mobile recording engine on Android:
  * session start, screenshot capture, binary message collection, and
- * lifecycle. Mirrors the iOS MobileEngine.
+ * lifecycle. Mirrors the iOS ReplayCore.
  *
  * Listeners call the `send*` methods, which encode a binary message
  * and hand it to the collector. Screenshots flow independently to
  * /v1/mobile/images.
  */
-class MobileEngine private constructor() {
+class ReplayCore private constructor() {
     companion object {
         @JvmStatic
-        val shared = MobileEngine()
+        val shared = ReplayCore()
     }
 
     private var transport: MobileTransport? = null

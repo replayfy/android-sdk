@@ -36,7 +36,7 @@ import com.replayfy.android.internal.privacy.PrivacyRegistry
  */
 internal class TapTracker(
     /** Called per tap with the metadata payload that becomes a
-     *  `tap` ReplayEvent. Implementation lives in ReplayCore so
+     *  `tap` ReplayEvent. Implementation lives in LegacyCore so
      *  we don't depend on its singleton from this package. */
     private val emit: (TapEventData) -> Unit,
 ) {

@@ -115,10 +115,10 @@ Bootstrap chain:
 1. App process starts
 2. Android instantiates `ReplayContentProvider` (declared in our merged
    manifest)
-3. `ReplayContentProvider.onCreate` calls `ReplayCore.autoBootstrap`
+3. `ReplayContentProvider.onCreate` calls `LegacyCore.autoBootstrap`
 4. ProcessLifecycleOwner observer registered
 5. Host app's `Application.onCreate` fires; customer calls `Replay.init`
-6. ReplayCore wires up the BatchSender + flush loop + emits
+6. LegacyCore wires up the BatchSender + flush loop + emits
    `session_start`
 7. App enters foreground/background → session rotates
 

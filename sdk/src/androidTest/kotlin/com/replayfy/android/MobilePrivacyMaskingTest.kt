@@ -26,12 +26,12 @@ import java.io.File
 
 /**
  * On-device proof that the mobile frames screenshotter masks sensitive
- * regions. Guards the bug where `MobileEngine.privacyRectsProvider` was
+ * regions. Guards the bug where `ReplayCore.privacyRectsProvider` was
  * never wired, so masking never reached the captured JPEGs.
  *
  * Builds a screen with a public control, a registry-marked label, and a
  * password [EditText]; asks the real privacy collectors (the same set
- * `MobileEngine.privacyRectsProvider` composes) for rects; renders the
+ * `ReplayCore.privacyRectsProvider` composes) for rects; renders the
  * decor view to a bitmap and paints the masks exactly like
  * `MobileScreenshots.encode`; then samples pixels. Writes a PNG for
  * inspection.
@@ -61,7 +61,7 @@ class MobilePrivacyMaskingTest {
             // Mark the label through the public registry path.
             PrivacyRegistry.add(activity.marked)
 
-            // Exactly the composition MobileEngine.privacyRectsProvider uses.
+            // Exactly the composition ReplayCore.privacyRectsProvider uses.
             rects = PrivacyRegistry.sensitiveBounds(root) +
                 PrivacyRegistry.bulkBounds(root) +
                 PrivacyRegistry.composeBoundsRelativeTo(root)

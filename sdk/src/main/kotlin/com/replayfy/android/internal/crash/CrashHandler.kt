@@ -57,7 +57,7 @@ internal class CrashHandler(
     }
 
     /** Read any crash record left over from a previous launch and
-     *  forward it to ReplayCore. Called once during install(). */
+     *  forward it to LegacyCore. Called once during install(). */
     private fun drainPrevious() {
         val file = recordFile() ?: return
         if (!file.exists()) return
@@ -112,7 +112,7 @@ internal class CrashHandler(
     }
 }
 
-/** A crash record recovered on next launch — passed to ReplayCore
+/** A crash record recovered on next launch — passed to LegacyCore
  *  for emission as an `error` event with `kind:"crash"`. */
 internal data class CrashRecord(
     /** "uncaught" — only kind in v1. Native "signal" reserved for

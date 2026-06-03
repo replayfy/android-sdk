@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * are instantiated by the OS BEFORE Application.onCreate.
  *
  * Emits ``PerformanceEventData`` ONCE per process — the first
- * onAppForegrounded after ReplayCore.init. Subsequent foregrounds
+ * onAppForegrounded after LegacyCore.init. Subsequent foregrounds
  * don't re-emit; "cold start" is by definition the cold one.
  *
  * Mirrors the iOS ``ColdStartTracker.swift``.

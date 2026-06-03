@@ -109,7 +109,7 @@ internal class NativeCrashHandler(
     }
 
     /** Read any signal record left over from a previous launch and
-     *  forward it to ReplayCore. Called once from [install]. */
+     *  forward it to LegacyCore. Called once from [install]. */
     private fun drainPrevious() {
         val file = recordFile()
         if (!file.exists()) return

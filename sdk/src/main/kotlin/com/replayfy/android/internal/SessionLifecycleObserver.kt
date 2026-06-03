@@ -5,7 +5,7 @@ import androidx.lifecycle.LifecycleOwner
 
 /**
  * Listens to whole-app foreground/background transitions via
- * [androidx.lifecycle.ProcessLifecycleOwner] and asks [ReplayCore] to
+ * [androidx.lifecycle.ProcessLifecycleOwner] and asks [LegacyCore] to
  * rotate sessions accordingly.
  *
  * Why ProcessLifecycleOwner rather than ActivityLifecycleCallbacks:
@@ -25,7 +25,7 @@ internal class SessionLifecycleObserver(
 
     override fun onStart(owner: LifecycleOwner) {
         // App entered foreground — either fresh launch or returning
-        // from background. ReplayCore decides whether this starts a
+        // from background. LegacyCore decides whether this starts a
         // new session or just resumes the existing one (matters when
         // multi-session-record is enabled and the gap was short).
         onAppForegrounded()

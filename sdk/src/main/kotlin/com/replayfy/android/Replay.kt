@@ -3,8 +3,8 @@ package com.replayfy.android
 import android.app.Application
 import android.content.Context
 import android.view.View
-import com.replayfy.android.internal.ReplayCore
-import com.replayfy.android.internal.mobile.MobileEngine
+import com.replayfy.android.internal.LegacyCore
+import com.replayfy.android.internal.mobile.ReplayCore
 import org.json.JSONObject
 
 /**
@@ -41,7 +41,7 @@ object Replay {
         // + binary message protocol → /v1/mobile/*. Replaces the legacy
         // per-snapshot/asset engine (no backward compatibility).
         val app = context.applicationContext as? Application ?: return
-        MobileEngine.shared.start(app, config.apiKey, config.apiHost)
+        ReplayCore.shared.start(app, config.apiKey, config.apiHost)
     }
 
     /**
@@ -57,12 +57,12 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun identify(distinctId: String, properties: Map<String, Any?>? = null) {
-        MobileEngine.shared.setUserId(distinctId)
+        ReplayCore.shared.setUserId(distinctId)
         // Each property rides as its own metadata(92) message — the backend
         // promotes plan/email/name to EndUser columns and keeps the rest as
         // custom properties, mirroring the web identify path.
         properties?.forEach { (key, value) ->
-            if (value != null) MobileEngine.shared.sendMetadata(key, value.toString())
+            if (value != null) ReplayCore.shared.sendMetadata(key, value.toString())
         }
     }
 
@@ -79,7 +79,7 @@ object Replay {
     @JvmOverloads
     fun track(name: String, properties: Map<String, Any?>? = null) {
         val payload = if (properties != null) JSONObject(properties).toString() else ""
-        MobileEngine.shared.sendEvent(name, payload)
+        ReplayCore.shared.sendEvent(name, payload)
     }
 
     /**
@@ -93,7 +93,7 @@ object Replay {
      */
     @JvmStatic
     fun stop() {
-        ReplayCore.stop()
+        LegacyCore.stop()
     }
 
     /**
@@ -102,7 +102,7 @@ object Replay {
      * decision dropped the current session.
      */
     @JvmStatic
-    fun isRecording(): Boolean = ReplayCore.isRecording()
+    fun isRecording(): Boolean = LegacyCore.isRecording()
 
     /**
      * Returns an OkHttp [Interceptor] that captures every request
@@ -138,10 +138,10 @@ object Replay {
      *  auto-tagger (which uses Activity class names by default). */
     @JvmStatic
     fun tagScreenName(name: String) {
-        ReplayCore.setRoute(name)
+        LegacyCore.setRoute(name)
         // Manual screen tag → viewComponent message, same as the
         // Activity auto-tagger, so the dashboard Screens tab reflects it.
-        MobileEngine.shared.sendScreen(name, name, true)
+        ReplayCore.shared.sendScreen(name, name, true)
     }
 
     /**
@@ -180,7 +180,7 @@ object Replay {
      */
     @JvmStatic
     fun pauseRecording() {
-        ReplayCore.setSnapshotPaused(true)
+        LegacyCore.setSnapshotPaused(true)
     }
 
     /**
@@ -189,7 +189,7 @@ object Replay {
      */
     @JvmStatic
     fun resumeRecording() {
-        ReplayCore.setSnapshotPaused(false)
+        LegacyCore.setSnapshotPaused(false)
     }
 
     /**
@@ -205,7 +205,7 @@ object Replay {
      */
     @JvmStatic
     fun cancelSession() {
-        ReplayCore.cancelCurrentSession()
+        LegacyCore.cancelCurrentSession()
     }
 
     // ------------------------------------------------------------------
@@ -225,12 +225,12 @@ object Replay {
      */
     @JvmStatic
     fun optOutOverall(optOut: Boolean) {
-        ReplayCore.setOverallOptOut(optOut)
+        LegacyCore.setOverallOptOut(optOut)
     }
 
     /** Whether the customer is currently opted out overall. */
     @JvmStatic
-    fun isOptedOutOverall(): Boolean = ReplayCore.isOverallOptedOut()
+    fun isOptedOutOverall(): Boolean = LegacyCore.isOverallOptedOut()
 
     /**
      * Schematic (snapshot-only) opt-out. When set to true: pixel
@@ -242,12 +242,12 @@ object Replay {
      */
     @JvmStatic
     fun optOutSchematicRecordings(optOut: Boolean) {
-        ReplayCore.setSchematicOptOut(optOut)
+        LegacyCore.setSchematicOptOut(optOut)
     }
 
     /** Whether schematic (snapshot) recording is currently opted out. */
     @JvmStatic
-    fun isOptedOutSchematicRecordings(): Boolean = ReplayCore.isSchematicOptedOut()
+    fun isOptedOutSchematicRecordings(): Boolean = LegacyCore.isSchematicOptedOut()
 
     // ------------------------------------------------------------------
     //  UXCam-parity deep-link helpers
@@ -267,7 +267,7 @@ object Replay {
      * Mirrors UXCam's `urlForCurrentSession()`.
      */
     @JvmStatic
-    fun urlForCurrentSession(): String? = ReplayCore.urlForCurrentSession()
+    fun urlForCurrentSession(): String? = LegacyCore.urlForCurrentSession()
 
     /**
      * Returns a URL pointing to the CURRENT user (every session for
@@ -277,7 +277,7 @@ object Replay {
      * Mirrors UXCam's `urlForCurrentUser()`.
      */
     @JvmStatic
-    fun urlForCurrentUser(): String? = ReplayCore.urlForCurrentUser()
+    fun urlForCurrentUser(): String? = LegacyCore.urlForCurrentUser()
 
     /**
      * Occlude every [android.widget.EditText] in the host app
@@ -385,7 +385,7 @@ object Replay {
      */
     @JvmStatic
     fun setUserProperty(key: String, value: Any?) {
-        ReplayCore.setUserProperty(key, value)
+        LegacyCore.setUserProperty(key, value)
     }
 
     /**
@@ -398,7 +398,7 @@ object Replay {
      */
     @JvmStatic
     fun setSessionProperty(key: String, value: Any?) {
-        ReplayCore.setSessionProperty(key, value)
+        LegacyCore.setSessionProperty(key, value)
     }
 
     // ------------------------------------------------------------------
@@ -415,7 +415,7 @@ object Replay {
      */
     @JvmStatic
     fun setAutomaticScreenNameTagging(enabled: Boolean) {
-        ReplayCore.setAutomaticScreenNameTagging(enabled)
+        LegacyCore.setAutomaticScreenNameTagging(enabled)
     }
 
     /**
@@ -429,7 +429,7 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun setPushNotificationToken(token: String, platform: String = "fcm") {
-        ReplayCore.setPushNotificationToken(token, platform)
+        LegacyCore.setPushNotificationToken(token, platform)
     }
 
     /**
@@ -441,7 +441,7 @@ object Replay {
      */
     @JvmStatic
     fun markSessionAsFavorite() {
-        ReplayCore.markSessionAsFavorite()
+        LegacyCore.markSessionAsFavorite()
     }
 
     /**
@@ -455,7 +455,7 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun addTagWithProperties(name: String, properties: Map<String, Any?>? = null) {
-        ReplayCore.addTagWithProperties(name, properties)
+        LegacyCore.addTagWithProperties(name, properties)
     }
 
     /**
@@ -469,7 +469,7 @@ object Replay {
      */
     @JvmStatic
     fun startNewSession() {
-        ReplayCore.forceStartNewSession()
+        LegacyCore.forceStartNewSession()
     }
 
     /**
@@ -496,7 +496,7 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun setAppVersion(version: String?, build: String? = null) {
-        ReplayCore.setAppVersionOverride(version, build)
+        LegacyCore.setAppVersionOverride(version, build)
     }
 
     /**
@@ -531,7 +531,7 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun allowShortBreakForAnotherApp(allow: Boolean, breakWindowMs: Long = 30_000L) {
-        ReplayCore.setAllowShortBreak(allow, breakWindowMs)
+        LegacyCore.setAllowShortBreak(allow, breakWindowMs)
     }
 
     /**
@@ -543,7 +543,7 @@ object Replay {
      */
     @JvmStatic
     fun setMultiSessionRecord(enabled: Boolean) {
-        ReplayCore.setMultiSessionRecord(enabled)
+        LegacyCore.setMultiSessionRecord(enabled)
     }
 
     /**
@@ -563,7 +563,7 @@ object Replay {
      */
     @JvmStatic
     fun addVerificationListener(listener: Runnable) {
-        ReplayCore.addVerificationListener { listener.run() }
+        LegacyCore.addVerificationListener { listener.run() }
     }
 
     /** Drop a previously-added listener. Safe to call even when
@@ -576,7 +576,7 @@ object Replay {
         // listener early, never remove it" — this is a best-effort
         // wrap-and-forward; the wrapped closure won't be found.
         // TODO: keep a Runnable -> closure map for accurate removal.
-        ReplayCore.removeVerificationListener { listener.run() }
+        LegacyCore.removeVerificationListener { listener.run() }
     }
 
     /**
@@ -595,7 +595,7 @@ object Replay {
         description: String? = null,
         properties: Map<String, Any?>? = null,
     ) {
-        ReplayCore.reportBugEvent(name, description, properties)
+        LegacyCore.reportBugEvent(name, description, properties)
     }
 
     /**
@@ -613,7 +613,7 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun stopApplicationAndUploadData(timeoutMs: Long = 5_000) {
-        ReplayCore.stopAndUploadSync(timeoutMs)
+        LegacyCore.stopAndUploadSync(timeoutMs)
     }
 
     /**
@@ -648,8 +648,8 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun log(level: String, message: String, stack: String? = null) {
-        ReplayCore.logExplicit(level = level, message = message, stack = stack)
+        LegacyCore.logExplicit(level = level, message = message, stack = stack)
         // Bridge into the binary message stream → dashboard console tab.
-        MobileEngine.shared.sendLog(level, if (stack != null) "$message\n$stack" else message)
+        ReplayCore.shared.sendLog(level, if (stack != null) "$message\n$stack" else message)
     }
 }

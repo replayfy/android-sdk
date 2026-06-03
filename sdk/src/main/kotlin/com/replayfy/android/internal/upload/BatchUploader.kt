@@ -18,7 +18,7 @@ import com.replayfy.android.internal.ReplayBatchEnvelope
  *   2. Lets the worker re-use BatchSender directly without
  *      accidentally re-queuing already-queued bytes.
  *   3. Makes the live-vs-persisted decision a one-line wrap in
- *      [ReplayCore], rather than scattered conditionals.
+ *      [LegacyCore], rather than scattered conditionals.
  *
  * Designed for [Dispatchers.IO]-only callers — the disk write +
  * network call are both blocking.
@@ -36,7 +36,7 @@ internal class BatchUploader(
      */
     /**
      * Callback fired the first time a batch successfully reaches
-     * the backend. Used by [com.replayfy.android.internal.ReplayCore]
+     * the backend. Used by [com.replayfy.android.internal.LegacyCore]
      * to drain the verification-listener list registered via
      * `Replay.addVerificationListener` — mirrors UXCam's
      * `VerificationListener.onVerificationSuccess`.
@@ -86,7 +86,7 @@ internal class BatchUploader(
 
     /**
      * Drain any pre-existing queue on init. Called once from
-     * [ReplayCore.init] to pick up batches persisted during a
+     * [LegacyCore.init] to pick up batches persisted during a
      * previous process lifetime. Doesn't block init — runs as
      * a WorkManager job in the background.
      */

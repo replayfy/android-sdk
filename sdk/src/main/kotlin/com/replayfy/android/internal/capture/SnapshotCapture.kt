@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicLong
  * branch — encode + hash + asset/thumbnail upload — was removed along
  * with the /v1/replay/assets + /v1/replay/thumbnail endpoints; the
  * current SDK streams pixels over the binary /v1/mobile protocol via
- * MobileEngine, not through this path.)
+ * ReplayCore, not through this path.)
  *
  * Trigger policies (from docs/native-snapshot-format.md):
  *   • `screen_appeared` — called on activity resume + manual setRoute
@@ -44,7 +44,7 @@ internal class SnapshotCapture(
     private var lastSnapshotAtMs: Long = 0L
 
     /**
-     * Runtime gate that ReplayCore flips when the customer calls
+     * Runtime gate that LegacyCore flips when the customer calls
      * `pauseRecording()` / `Replay.optOutSchematicRecordings(true)`.
      * Defaults to true (recording). When false: every entry point
      * — captureNow, scheduleIdle, screen-resume callback — early-
@@ -76,7 +76,7 @@ internal class SnapshotCapture(
     /**
      * Start the periodic capture loop. Idempotent — repeat calls
      * cancel the previous Runnable so we never double-schedule.
-     * Called by [com.replayfy.android.internal.ReplayCore] after
+     * Called by [com.replayfy.android.internal.LegacyCore] after
      * init lands and the snapshot uploader is wired.
      */
     fun startPeriodic() {
@@ -100,7 +100,7 @@ internal class SnapshotCapture(
     }
 
     /**
-     * Stop the periodic loop. Called from ReplayCore.stop /
+     * Stop the periodic loop. Called from LegacyCore.stop /
      * pauseRecording so we don't churn out captures while the SDK
      * is paused or torn down.
      */
@@ -136,7 +136,7 @@ internal class SnapshotCapture(
     /**
      * Main-thread phase: walk the View tree and emit the snapshot.
      * Tree-only — pixel capture for this path was retired with the
-     * asset/thumbnail upload endpoints; MobileEngine streams the
+     * asset/thumbnail upload endpoints; ReplayCore streams the
      * actual screenshot bundle over the binary protocol.
      */
     private fun doCapture(trigger: String) {

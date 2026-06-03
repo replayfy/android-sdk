@@ -30,7 +30,7 @@ import java.util.concurrent.TimeUnit
  *
  * Configuration comes through WorkData rather than a singleton
  * because Workers run in arbitrary process states (could be the
- * app's first launch after a kill, before [ReplayCore.init] has
+ * app's first launch after a kill, before [LegacyCore.init] has
  * landed).
  */
 internal class SessionUploadWorker(
@@ -99,7 +99,7 @@ internal class SessionUploadWorker(
         const val KEY_API_HOST = "api_host"
 
         /**
-         * Schedule a one-shot drain. Called from [ReplayCore.init]
+         * Schedule a one-shot drain. Called from [LegacyCore.init]
          * to pick up any batches queued during a previous process
          * lifetime, AND from the end-of-session hook so the last
          * batch reliably ships even if the user backgrounds the app

@@ -98,7 +98,7 @@ internal class RemoteConfigFetcher(
         }
     }
 
-    /** Stop the fetch loop. Called from [ReplayCore.stop] /
+    /** Stop the fetch loop. Called from [LegacyCore.stop] /
      *  cancelCurrentSession so we don't leak a coroutine after the
      *  SDK is shut down. */
     fun stop() {

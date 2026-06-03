@@ -25,7 +25,7 @@ import java.util.UUID
  * Stetho, Sentry, Chucker) does the same.
  *
  * Two emit gates:
- *   1. [emit] closure — set by ReplayCore on install. Null → drop
+ *   1. [emit] closure — set by LegacyCore on install. Null → drop
  *      events silently (SDK not initialised yet, or stopped).
  *   2. [enabled] — reflects ReplayConfig.captureNetwork. Customer
  *      can flip mid-session via remote config; we re-read on every
@@ -156,7 +156,7 @@ class ReplayInterceptor internal constructor() : Interceptor {
     }
 
     internal companion object {
-        // Wired by ReplayCore on init. Volatile reads on every
+        // Wired by LegacyCore on init. Volatile reads on every
         // request keep mid-session config changes effective.
         @Volatile internal var currentEmit: ((NetworkEventData) -> Unit)? = null
         @Volatile internal var enabled: Boolean = false
@@ -165,7 +165,7 @@ class ReplayInterceptor internal constructor() : Interceptor {
         @Volatile internal var redactPatterns: List<Regex> = emptyList()
 
         /** Install settings from ReplayConfig. Called from
-         *  ReplayCore.init when an interceptor instance exists in
+         *  LegacyCore.init when an interceptor instance exists in
          *  the customer's OkHttpClient. */
         internal fun configure(config: ReplayConfig) {
             enabled = config.captureNetwork

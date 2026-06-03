@@ -24,7 +24,7 @@ class ReplayContentProvider : ContentProvider() {
     override fun onCreate(): Boolean {
         val ctx = context ?: return false
         try {
-            ReplayCore.autoBootstrap(ctx)
+            LegacyCore.autoBootstrap(ctx)
         } catch (t: Throwable) {
             // Never crash the host app from our bootstrap. Logged so
             // customer-success can diagnose silent install failures.

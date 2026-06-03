@@ -14,7 +14,7 @@ import com.replayfy.android.internal.PerformanceEventData
  *
  * Each collector calls a shared `emit` closure with
  * `(metric, value, unit, rating?)`. We wrap into the standard
- * [PerformanceEventData] shape and forward to ReplayCore for
+ * [PerformanceEventData] shape and forward to LegacyCore for
  * inclusion in the next batch.
  *
  * Mirrors the iOS ``PerfMetricsManager.swift``. Deferred to
@@ -72,14 +72,14 @@ internal class PerfMetricsManager(
         ))
     }
 
-    /** Start every collector. Called from [com.replayfy.android.internal.ReplayCore]
+    /** Start every collector. Called from [com.replayfy.android.internal.LegacyCore]
      *  init after the session runtime is set up. */
     fun start() {
         frames.start()
         memory.start()
         thermal.start()
         anr.start()
-        // Cold start fires once on first foreground; ReplayCore
+        // Cold start fires once on first foreground; LegacyCore
         // calls reportFirstForeground from its lifecycle hook so
         // we measure cold-launch → user-sees-app time, not just
         // process-init.

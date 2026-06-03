@@ -45,7 +45,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * rrweb-specific snapshot dance — that lives in the snapshot pipeline
  * commit).
  */
-internal object ReplayCore {
+internal object LegacyCore {
 
     private val initialized = AtomicBoolean(false)
     private val bootstrapped = AtomicBoolean(false)
@@ -1148,7 +1148,7 @@ internal object ReplayCore {
         flushJob = null
         runtime = null
         // Stop background perf collectors — Choreographer callback,
-        // memory timer, thermal listener. Restarts when ReplayCore
+        // memory timer, thermal listener. Restarts when LegacyCore
         // re-initialises (which doesn't happen in v1 but the
         // teardown discipline is correct).
         perfMetrics?.stop()
