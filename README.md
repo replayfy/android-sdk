@@ -1,51 +1,29 @@
 # Replay Android SDK
 
-Session replay + analytics for Android apps.
+Session replay + analytics for Android. Captures screen recordings,
+taps & gestures, screen navigation, network, console logs, crashes, and
+performance vitals, and streams them to your Replayfy dashboard.
 
-## Status
+- **Min SDK:** 21
+- **Coordinates:** `com.replayfy:android-sdk:0.0.1`
 
-**Foundation only — not production-ready.** The public API surface is
-in place but the recording engine ships in follow-up commits:
-
-- ✅ Zero-config auto-bootstrap (ContentProvider)
-- ✅ ProcessLifecycleOwner-based session boundaries
-- ✅ OkHttp batch sender (POST `/v1/replay/batch`)
-- ✅ Custom event tracking (`Replay.track`)
-- ✅ Identify (`Replay.identify`)
-- ✅ Tap tracker — per-View OnTouchListener wrap, WindowManagerGlobal
-  walk catches dialogs/popups, widget classification + value extraction
-- ✅ Manual screen tagging (`Replay.tagScreenName`)
-- ✅ Snapshot pipeline (tree + bitmap) — view tree serializer emits
-  `native_snapshot` events on screen change + 500ms after each tap.
-  Full-screen PNG captured via Legacy `View.draw`, SHA-256 hashed,
-  uploaded to `/v1/replay/assets/:hash`, embedded as `root.imageRef`.
-  Player renders pixel-accurate playback.
-- ✅ Persistent upload queue — failed live batches persist to
-  `filesDir/replay-queue/`. `SessionUploadWorker` (WorkManager) drains
-  on next foreground or whenever NetworkType.CONNECTED returns. Capped
-  at 500 queued files / ~25 MB to keep disk pressure bounded.
-- ⏳ Snapshot pipeline (PixelCopy) — adds SurfaceView/video capture
-  (Legacy `View.draw` can't see hardware surfaces)
-- ⏳ Network capture — OkHttp Interceptor
-- ⏳ Crash handler — Thread.UncaughtExceptionHandler
-- ⏳ Occlusion / privacy views
-- ⏳ Native performance metrics (cold_start_ms, frame drops, ANR, etc.)
-
-Each ⏳ corresponds to a follow-up commit; see `/docs` in the
-`replay-web-sdk` repo for the design specs (`mobile-vitals-matrix.md`,
-`native-snapshot-format.md`).
-
-## Quick start
-
-Add the SDK to your app's `build.gradle.kts`:
+## Install
 
 ```kotlin
+// build.gradle.kts
 dependencies {
     implementation("com.replayfy:android-sdk:0.0.1")
 }
 ```
 
-Then in your `Application.onCreate`:
+No manifest changes are required — a bundled `ContentProvider` boots the
+SDK before `Application.onCreate`, so lifecycle/crash hooks attach as
+early as possible.
+
+## Quick start
+
+A single call starts everything (recording, tap capture, screen
+detection, crash + performance capture):
 
 ```kotlin
 import com.replayfy.android.Replay
@@ -54,73 +32,129 @@ import com.replayfy.android.ReplayConfig
 class MyApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        Replay.init(this, ReplayConfig(
-            apiKey = "rpl_pk_…",
-            apiHost = "https://ingest.replayfy.io",
-        ))
+        Replay.init(
+            this,
+            ReplayConfig(
+                apiKey = "rpl_pk_xxxxxxxx",
+                apiHost = "https://ingest.replayfy.io",
+            ),
+        )
     }
 }
 ```
 
-That's it. The SDK auto-starts on first activity, ends sessions on
-background, retries failed uploads.
-
-## API surface
+Attach a known user and fire custom events:
 
 ```kotlin
-Replay.init(context, config)        // start the SDK
-Replay.identify(userId, props)      // attach user identity
-Replay.track("checkout_started",    // custom event
-             mapOf("amount" to 99))
-Replay.stop()                       // manual session end
-Replay.isRecording()                // status
-Replay.tagScreenName("Login")       // (stub) override auto-tag
-Replay.addPrivacyView(view)         // (stub) mark view sensitive
-Replay.pauseRecording()             // (stub) pause schematic
-Replay.resumeRecording()            // (stub) resume schematic
+Replay.identify("user_123", mapOf("email" to "a@b.com", "plan" to "pro"))
+Replay.track("purchase", mapOf("amount" to 4200, "currency" to "USD"))
 ```
+
+## Configuration — `ReplayConfig`
+
+Only `apiKey` and `apiHost` are required; everything else has a sensible
+default. With `useRemoteConfig = true` (default), your values act as
+cold-start fallbacks — after the first fetch, dashboard settings win
+(15-minute refresh), so flags can change without an app update.
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `apiKey` | `String` | **required** | Project API key from the dashboard |
+| `apiHost` | `String` | **required** | Ingest base URL, e.g. `https://ingest.replayfy.io` |
+| `projectId` | `String?` | `null` | Only when one key spans multiple projects |
+| `distinctId` | `String?` | `null` | Known user id at init; else an install-stable anonymous id |
+| `flushIntervalMs` | `Long` | `5000` | Auto-flush cadence for the in-memory batch |
+| `maxBufferSize` | `Int` | `500` | Events buffered before a flush is forced |
+| `liveMode` | `Boolean` | `true` | Live-presence socket (shows the session "online" on the dashboard) |
+| `captureConsole` | `Boolean` | `true` | Capture `Log.x` / stdout / stderr |
+| `captureNetwork` | `Boolean` | `false` | Capture HTTP requests (off by default — PII risk) |
+| `captureErrors` | `Boolean` | `true` | Capture uncaught exceptions / crashes |
+| `captureHeaders` | `Boolean` | `false` | Include request/response headers in network capture (PII risk) |
+| `maxBodyBytes` | `Int` | `4096` | Max captured body bytes per network event (truncated above) |
+| `captureSnapshotPixels` | `Boolean` | `true` | Pixel-accurate playback vs tree-only "wireframe" |
+| `snapshotIntervalMs` | `Long` | `500` | Snapshot cadence (~2 FPS); floored at 200 ms |
+| `autoScreenName` | `Boolean` | `true` | Auto-detect screen from each Activity's class name |
+| `useRemoteConfig` | `Boolean` | `true` | Let dashboard config override these at runtime |
+
+## Privacy & masking
+
+```kotlin
+Replay.addPrivacyView(cardNumberField)            // mask one view
+Replay.removePrivacyView(cardNumberField)
+
+Replay.occludeAllTextFields(true)                 // mask every EditText
+Replay.occludeAllTextView(true)                   // mask every TextView/Button
+Replay.applyOcclusion(CreditCardView::class.java) // mask a view class everywhere
+Replay.occludeSensitiveScreen(true)               // mask the whole screen
+Replay.occludeRectsOnNextFrame(rects)             // one-shot rect mask (RN/Flutter)
+```
+
+Password fields are masked automatically.
+
+## Network capture
+
+Capture is opt-in (`captureNetwork = true`) and wired by adding the
+interceptor to your OkHttp client:
+
+```kotlin
+val client = OkHttpClient.Builder()
+    .addInterceptor(Replay.networkInterceptor())
+    .build()
+```
+
+## API reference
+
+### Active
+
+| Method | Purpose |
+|---|---|
+| `init(context, config)` | Boot + start recording |
+| `identify(distinctId, properties?)` | Attach a known user (`email` / `name` / `plan` are promoted) |
+| `track(name, properties?)` | Custom timeline / funnel event |
+| `tagScreenName(name)` | Manually set the current screen name |
+| `log(level, message, stack?)` | Bridge a custom logger into the console tab |
+| `addPrivacyView` / `removePrivacyView` | Per-view masking |
+| `occludeAllTextFields` / `occludeAllTextView` | Bulk input / label masking |
+| `applyOcclusion(Class)` / `removeOcclusion(Class)` | Mask all instances of a view class |
+| `occludeSensitiveScreen(Boolean)` | Full-screen mask |
+| `occludeRectsOnNextFrame(rects)` | One-shot rect masking |
+| `networkInterceptor()` | OkHttp interceptor for network capture |
+
+The engine additionally captures automatically: periodic screenshots,
+taps & gestures, screen navigation, performance vitals (cold start,
+frame drops, ANR, memory, thermal), and crashes.
+
+### Coming soon — currently no-ops
+
+These methods exist on the public surface but are **not yet active** —
+they are pending the engine consolidation (see `TODO.md`). Calling them
+today is safe but has no effect:
+
+`stop()` · `isRecording()` · `pauseRecording()` / `resumeRecording()` ·
+`cancelSession()` · `optOutOverall(Boolean)` / `isOptedOutOverall()` ·
+`optOutSchematicRecordings(Boolean)` / `isOptedOutSchematicRecordings()` ·
+`setUserProperty` · `setSessionProperty` · `markSessionAsFavorite()` ·
+`addTagWithProperties` · `reportBugEvent` · `urlForCurrentSession()` /
+`urlForCurrentUser()` · `setAutomaticScreenNameTagging` ·
+`setPushNotificationToken` · `startNewSession()` · `setAppVersion` ·
+`allowShortBreakForAnotherApp` · `setMultiSessionRecord` ·
+`enableAdvancedGestureRecognizer` · `addVerificationListener` /
+`removeVerificationListener` · `stopApplicationAndUploadData`.
+
+> Until these land, do not rely on `optOutOverall` for GDPR compliance.
 
 ## Building locally
 
-The repo uses Gradle but doesn't ship the wrapper jar (binary). Either:
-
-1. Install Gradle (`brew install gradle`) and run `gradle wrapper`
-   once, or
-2. Open the project in Android Studio — it'll handle the wrapper +
-   sync.
-
-Then:
-
 ```bash
 ./gradlew :sdk:assembleRelease   # builds the .aar
-./gradlew :sdk:test               # JVM unit tests (none yet)
+./gradlew :sdk:compileDebugKotlin
 ```
 
-## Architecture
+JDK 17 is required.
 
-The SDK borrows its architecture from UXCam's Android SDK
-(decompiled + studied during the design phase) and pairs it with
-our existing web SDK's batch envelope so the backend treats web and
-mobile sessions uniformly.
+## ProGuard / R8
 
-Layers (mirrors UXCam's 3-AAR split, currently in one module):
-
-- `com.replayfy.android` — public API (`Replay`, `ReplayConfig`)
-- `com.replayfy.android.internal` — orchestration + transport
-- `com.replayfy.android.capture` — snapshot pipelines (TBD)
-- `com.replayfy.android.tracker` — gesture tracker (TBD)
-
-Bootstrap chain:
-
-1. App process starts
-2. Android instantiates `ReplayContentProvider` (declared in our merged
-   manifest)
-3. `ReplayContentProvider.onCreate` calls `LegacyCore.autoBootstrap`
-4. ProcessLifecycleOwner observer registered
-5. Host app's `Application.onCreate` fires; customer calls `Replay.init`
-6. LegacyCore wires up the BatchSender + flush loop + emits
-   `session_start`
-7. App enters foreground/background → session rotates
+Consumer rules ship with the AAR — no host-app configuration needed.
 
 ## License
 
