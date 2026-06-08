@@ -190,7 +190,7 @@ object Replay {
      */
     @JvmStatic
     fun pauseRecording() {
-        LegacyCore.setSnapshotPaused(true)
+        ReplayCore.shared.pauseCapture()
     }
 
     /**
@@ -199,7 +199,7 @@ object Replay {
      */
     @JvmStatic
     fun resumeRecording() {
-        LegacyCore.setSnapshotPaused(false)
+        ReplayCore.shared.resumeCapture()
     }
 
     /**
@@ -428,7 +428,7 @@ object Replay {
      */
     @JvmStatic
     fun setAutomaticScreenNameTagging(enabled: Boolean) {
-        LegacyCore.setAutomaticScreenNameTagging(enabled)
+        ReplayCore.shared.setAutoScreenName(enabled)
     }
 
     /**
@@ -442,7 +442,8 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun setPushNotificationToken(token: String, platform: String = "fcm") {
-        LegacyCore.setPushNotificationToken(token, platform)
+        ReplayCore.shared.sendMetadata("\$push_token", token)
+        ReplayCore.shared.sendMetadata("\$push_platform", platform)
     }
 
     /**
@@ -454,7 +455,7 @@ object Replay {
      */
     @JvmStatic
     fun markSessionAsFavorite() {
-        LegacyCore.markSessionAsFavorite()
+        ReplayCore.shared.sendMetadata("\$favorited", "true")
     }
 
     /**
@@ -483,7 +484,7 @@ object Replay {
      */
     @JvmStatic
     fun startNewSession() {
-        LegacyCore.forceStartNewSession()
+        ReplayCore.shared.startNewSession()
     }
 
     /**
@@ -510,7 +511,8 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun setAppVersion(version: String?, build: String? = null) {
-        LegacyCore.setAppVersionOverride(version, build)
+        version?.let { ReplayCore.shared.sendMetadata("\$app_version", it) }
+        build?.let { ReplayCore.shared.sendMetadata("\$app_build", it) }
     }
 
     /**
@@ -577,7 +579,7 @@ object Replay {
      */
     @JvmStatic
     fun addVerificationListener(listener: Runnable) {
-        LegacyCore.addVerificationListener { listener.run() }
+        ReplayCore.shared.addVerificationListener(listener)
     }
 
     /** Drop a previously-added listener. Safe to call even when
@@ -590,7 +592,7 @@ object Replay {
         // listener early, never remove it" — this is a best-effort
         // wrap-and-forward; the wrapped closure won't be found.
         // TODO: keep a Runnable -> closure map for accurate removal.
-        LegacyCore.removeVerificationListener { listener.run() }
+        ReplayCore.shared.removeVerificationListener(listener)
     }
 
     /**

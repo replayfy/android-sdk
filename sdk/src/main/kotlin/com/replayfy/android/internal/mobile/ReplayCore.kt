@@ -44,6 +44,11 @@ class ReplayCore private constructor() {
     private var touch: MobileTouchCapture? = null
     private var perf: MobilePerfMonitor? = null
     private var consoleCapture: ConsoleCapture? = null
+    // Retained from the first start() so startNewSession() can restart cleanly.
+    @Volatile private var application: Application? = null
+    @Volatile private var lastConfig: ReplayConfig? = null
+    private val verificationListeners =
+        java.util.concurrent.CopyOnWriteArrayList<Runnable>()
     // Live-presence socket (mirrors the web SDK's presence.ts): keeps this
     // session on the dashboard's online list for its lifetime; the backend
     // LiveGateway flips the EndUser online on connect / offline 10s after
@@ -103,6 +108,8 @@ class ReplayCore private constructor() {
         this.projectKey = projectKey
         this.host = host
         autoScreenName = config.autoScreenName
+        application = app
+        lastConfig = config
         app.registerActivityLifecycleCallbacks(activityCallbacks)
         val transport = MobileTransport(host, projectKey)
         this.transport = transport
@@ -217,6 +224,8 @@ class ReplayCore private constructor() {
                 preStart.clear()
                 ready = true
             }
+            // Session is live — notify onboarding/verification listeners.
+            verificationListeners.forEach { runCatching { it.run() } }
         }
     }
 
@@ -241,6 +250,29 @@ class ReplayCore private constructor() {
         presence?.stop(); presence = null
         sessionId = null
     }
+
+    // ── Lifecycle controls (facade re-homes, #119) ───────────────────
+    /** Pause periodic screenshot capture; events keep flowing. */
+    fun pauseCapture() { screenshots?.pause() }
+
+    /** Resume periodic screenshot capture. */
+    fun resumeCapture() { screenshots?.resume() }
+
+    /** Toggle auto screen-name tagging (Activity lifecycle) at runtime. */
+    fun setAutoScreenName(enabled: Boolean) { autoScreenName = enabled }
+
+    /** End the current session and immediately start a fresh one using the
+     *  config retained from the first start(). No-op before start() runs. */
+    fun startNewSession() {
+        val app = application ?: return
+        val cfg = lastConfig ?: return
+        stop()
+        start(app, cfg)
+    }
+
+    fun addVerificationListener(listener: Runnable) { verificationListeners.add(listener) }
+
+    fun removeVerificationListener(listener: Runnable) { verificationListeners.remove(listener) }
 
     // ── Message API (called by listeners) ────────────────────────────
     fun sendClick(label: String, x: Long, y: Long) =
