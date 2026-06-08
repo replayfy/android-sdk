@@ -103,7 +103,7 @@ object Replay {
      */
     @JvmStatic
     fun stop() {
-        LegacyCore.stop()
+        ReplayCore.shared.stop()
     }
 
     /**
@@ -112,7 +112,7 @@ object Replay {
      * decision dropped the current session.
      */
     @JvmStatic
-    fun isRecording(): Boolean = LegacyCore.isRecording()
+    fun isRecording(): Boolean = ReplayCore.shared.sessionId != null
 
     /**
      * Returns an OkHttp [Interceptor] that captures every request
@@ -398,7 +398,7 @@ object Replay {
      */
     @JvmStatic
     fun setUserProperty(key: String, value: Any?) {
-        LegacyCore.setUserProperty(key, value)
+        if (value != null) ReplayCore.shared.sendMetadata(key, value.toString())
     }
 
     /**
@@ -411,7 +411,7 @@ object Replay {
      */
     @JvmStatic
     fun setSessionProperty(key: String, value: Any?) {
-        LegacyCore.setSessionProperty(key, value)
+        if (value != null) ReplayCore.shared.sendMetadata(key, value.toString())
     }
 
     // ------------------------------------------------------------------
@@ -468,7 +468,8 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun addTagWithProperties(name: String, properties: Map<String, Any?>? = null) {
-        LegacyCore.addTagWithProperties(name, properties)
+        val payload = if (properties != null) JSONObject(properties).toString() else ""
+        ReplayCore.shared.sendEvent(name, payload)
     }
 
     /**
@@ -608,7 +609,12 @@ object Replay {
         description: String? = null,
         properties: Map<String, Any?>? = null,
     ) {
-        LegacyCore.reportBugEvent(name, description, properties)
+        val props = buildMap<String, Any?> {
+            put("name", name)
+            description?.let { put("description", it) }
+            properties?.let { putAll(it) }
+        }
+        ReplayCore.shared.sendEvent("\$bug_report", JSONObject(props).toString())
     }
 
     /**
@@ -626,7 +632,8 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun stopApplicationAndUploadData(timeoutMs: Long = 5_000) {
-        LegacyCore.stopAndUploadSync(timeoutMs)
+        // stop() flushes the in-memory batch as it tears the engine down.
+        ReplayCore.shared.stop()
     }
 
     /**
@@ -661,7 +668,6 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun log(level: String, message: String, stack: String? = null) {
-        LegacyCore.logExplicit(level = level, message = message, stack = stack)
         // Bridge into the binary message stream → dashboard console tab.
         ReplayCore.shared.sendLog(level, if (stack != null) "$message\n$stack" else message)
     }
