@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *      SurfaceView's own surface. Composite each result onto the
  *      main bitmap at the SurfaceView's window-relative position.
  *
- * UXCam ships the equivalent multi-pass for WebView and similar
+ * the reference mobile SDK ships the equivalent multi-pass for WebView and similar
  * hardware surfaces — visible in their decompiled
  * PixelCopyCapturePipeline (e.g. `webViewDeferred` / `webViewRects`
  * branches around `performPixelCopyCapture`).

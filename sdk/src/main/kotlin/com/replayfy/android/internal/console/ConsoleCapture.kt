@@ -11,7 +11,7 @@ import java.io.PrintStream
  * buffer which requires `READ_LOGS` permission to read back — that
  * permission is granted only to platform apps post-Jelly-Bean
  * (4.1+), so user-installed apps cannot read their own Log output.
- * UXCam has the same constraint.
+ * the reference mobile SDK has the same constraint.
  *
  * What we CAN capture in user-space without permissions:
  *

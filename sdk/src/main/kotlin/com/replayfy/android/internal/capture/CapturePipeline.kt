@@ -25,7 +25,7 @@ import android.view.WindowManager
  * [CapturePipelineSelector] picks one at runtime based on what the
  * source view + window can support.
  *
- * Mirrors the architecture UXCam ships (CapturePipelineSelector +
+ * Mirrors the architecture the reference mobile SDK ships (CapturePipelineSelector +
  * FrameCapturePipeline interface + multiple pipelines) — without
  * which any customer using video / maps / camera / ExoPlayer ships
  * black snapshots from us.

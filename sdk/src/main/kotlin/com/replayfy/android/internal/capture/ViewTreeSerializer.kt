@@ -29,7 +29,7 @@ import com.replayfy.android.internal.tracker.WidgetClassifier
  *
  * Mirrors the algorithm in
  * replay-web-sdk/docs/native-snapshot-format.md and the per-platform
- * pseudocode from uxcam-flutter's widget_extractor adapted to
+ * pseudocode from the reference mobile SDK-flutter's widget_extractor adapted to
  * Android's View hierarchy.
  */
 internal object ViewTreeSerializer {

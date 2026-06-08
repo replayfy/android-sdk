@@ -14,7 +14,7 @@ import java.util.WeakHashMap
  * leak risk from holding references to Views whose Activity has been
  * destroyed.
  *
- * Mirrors `ScreenActionViewsRepository` from UXCam's screenaction
+ * Mirrors `ScreenActionViewsRepository` from the reference mobile SDK's screenaction
  * module.
  */
 internal class ViewRegistry {

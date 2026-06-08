@@ -31,10 +31,10 @@ import android.os.SystemClock
  * pressure. A separate Thread is the simplest construct that
  * cannot be starved by anything happening on main.
  *
- * UXCam DOES NOT ship ANR detection (verified via decompilation of
- * uxcam-android.aar 3.10.2 — no Anr/Watchdog/ApplicationNotResponding
+ * the reference mobile SDK DOES NOT ship ANR detection (verified via decompilation of
+ * the reference mobile SDK-android.aar 3.10.2 — no Anr/Watchdog/ApplicationNotResponding
  * classes). Datadog RUM, Firebase Performance, and Sentry all do.
- * Building it here closes a gap vs UXCam + matches the industry
+ * Building it here closes a gap vs the reference mobile SDK + matches the industry
  * standard.
  *
  * Mirrors no iOS equivalent — iOS uses a different mechanism for

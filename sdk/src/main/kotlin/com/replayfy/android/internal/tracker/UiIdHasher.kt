@@ -8,7 +8,7 @@ package com.replayfy.android.internal.tracker
  * taps on the same logical button across millions of sessions
  * without storing the full triple per row.
  *
- * Matches the algorithm UXCam ships (and the one we documented in
+ * Matches the algorithm the reference mobile SDK ships (and the one we documented in
  * docs/native-snapshot-format.md). The same hash on the SDK side and
  * the dashboard side keeps tap-marker → snapshot-node linking
  * deterministic.
@@ -41,7 +41,7 @@ internal object UiIdHasher {
             hash = ((hash shl 5) + hash) + input[i].code
         }
         // Mask to 32-bit unsigned to match the JS implementation in
-        // uxcam-flutter's widget_extractor; matters because the
+        // the reference mobile SDK-flutter's widget_extractor; matters because the
         // dashboard reads ids from both web (web-sdk) and native, and
         // an inconsistent width would diverge collisions.
         return (hash and 0xFFFFFFFFL).toString(16)

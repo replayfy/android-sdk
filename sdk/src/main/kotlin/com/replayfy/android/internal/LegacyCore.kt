@@ -80,7 +80,7 @@ internal object LegacyCore {
      * successful batch upload (server-side handshake confirmed).
      * Used during onboarding for "Verify integration" UI affordances.
      *
-     * UXCam parity: `addVerificationListener` / `removeVerificationListener`.
+     * the reference mobile SDK parity: `addVerificationListener` / `removeVerificationListener`.
      *
      * One-shot semantics — listeners run ONCE per process (no
      * re-fire on subsequent uploads even after [stop] / re-init).
@@ -96,7 +96,7 @@ internal object LegacyCore {
     @Volatile private var snapshotPaused: Boolean = false
 
     // -----------------------------------------------------------------
-    //  Session lifecycle controls (UXCam allowShortBreak +
+    //  Session lifecycle controls (the reference mobile SDK allowShortBreak +
     //  setMultiSessionRecord)
     // -----------------------------------------------------------------
     //
@@ -216,7 +216,7 @@ internal object LegacyCore {
             // Honor the customer's snapshot cadence preference;
             // remote config can re-tune this mid-session.
             snap.periodicIntervalMs = cfg.snapshotIntervalMs.coerceAtLeast(200L)
-            // UXCam-style ~2 FPS continuous capture so the player
+            // industry-standard ~2 FPS continuous capture so the player
             // doesn't feel like a static gallery between screen
             // changes. Throttled by minIntervalMs inside doCapture
             // so a fast cadence + back-to-back triggers don't
@@ -285,7 +285,7 @@ internal object LegacyCore {
         // dashboard's user list + filters). Everything else stays
         // in customProps as a JSON blob.
         //
-        // Matches UXCam's behaviour: setUserIdentity("foo@bar.com")
+        // Matches the reference mobile SDK's behaviour: setUserIdentity("foo@bar.com")
         // populates the email column even when the customer passed
         // it via the generic properties bag.
         val email = (properties?.get("email") as? String)?.trim()?.lowercase()
@@ -322,10 +322,10 @@ internal object LegacyCore {
     }
 
     // -----------------------------------------------------------------
-    //  setUserProperty / setSessionProperty — UXCam-parity API
+    //  setUserProperty / setSessionProperty — industry-standard API
     // -----------------------------------------------------------------
     //
-    // UXCam ships setUserProperty(key, value) + setSessionProperty(key,
+    // the reference mobile SDK ships setUserProperty(key, value) + setSessionProperty(key,
     // value) as STICKY props (vs `track()` properties which only
     // attach to that one event). User props ride on EndUser.customProps
     // via the identity payload that's re-shipped with every batch.
@@ -335,7 +335,7 @@ internal object LegacyCore {
     //
     // Both methods accept Any? for value to match Kotlin/Java idioms
     // (String, Int, Double, Boolean, null all serializable via
-    // JSONObject). UXCam has overloads per primitive type; Kotlin
+    // JSONObject). the reference mobile SDK has overloads per primitive type; Kotlin
     // doesn't need them.
 
     /** Local merged user-property store. Sent in every IdentifyPayload
@@ -378,7 +378,7 @@ internal object LegacyCore {
     }
 
     // -----------------------------------------------------------------
-    //  UXCam-parity session-control surface
+    //  industry-standard session-control surface
     // -----------------------------------------------------------------
 
     /**
@@ -388,7 +388,7 @@ internal object LegacyCore {
      * specific modal flow (where the Activity class names don't map
      * to user-meaningful screens) and back on when they leave it.
      *
-     * Mirrors UXCam's `setAutomaticScreenNameTagging(boolean)`.
+     * Mirrors the reference mobile SDK's `setAutomaticScreenNameTagging(boolean)`.
      */
     fun setAutomaticScreenNameTagging(enabled: Boolean) {
         tapTracker?.autoScreenNameEnabled = enabled
@@ -431,7 +431,7 @@ internal object LegacyCore {
      * to Session.favorite when it processes the batch (backend
      * task tracked in docs).
      *
-     * Mirrors UXCam's `markSessionAsFavorite()`. One-shot — call
+     * Mirrors the reference mobile SDK's `markSessionAsFavorite()`. One-shot — call
      * once per session you want flagged.
      */
     fun markSessionAsFavorite() {
@@ -449,12 +449,12 @@ internal object LegacyCore {
 
     /**
      * Attach a SESSION-level tag with optional properties. Distinct
-     * from [track] (event-level): UXCam customers use session tags
+     * from [track] (event-level): the reference mobile SDK customers use session tags
      * for "this session belongs to A/B variant X" or "this session
      * is part of the holiday-checkout flow" — values that filter the
      * whole session list rather than show up as timeline events.
      *
-     * Mirrors UXCam's `addTagWithProperties(name, properties)`. Ships
+     * Mirrors the reference mobile SDK's `addTagWithProperties(name, properties)`. Ships
      * the same custom-event envelope; kind="session_tag" signals to
      * the backend that the tag should be promoted into Session.tags
      * (separate Prisma column — see docs).
@@ -476,7 +476,7 @@ internal object LegacyCore {
     }
 
     // -----------------------------------------------------------------
-    //  GDPR opt-in / opt-out (UXCam parity)
+    //  GDPR opt-in / opt-out (the reference mobile SDK parity)
     // -----------------------------------------------------------------
 
     /**
@@ -661,7 +661,7 @@ internal object LegacyCore {
     }
 
     // -----------------------------------------------------------------
-    //  Session lifecycle controls (UXCam parity)
+    //  Session lifecycle controls (the reference mobile SDK parity)
     // -----------------------------------------------------------------
 
     /**
@@ -670,7 +670,7 @@ internal object LegacyCore {
      * does NOT trigger session_end — the same session resumes
      * when the user returns. Default false.
      *
-     * Mirrors UXCam's `allowShortBreakForAnotherApp(boolean)`. The
+     * Mirrors the reference mobile SDK's `allowShortBreakForAnotherApp(boolean)`. The
      * window defaults to 30 s; pass a custom value when the
      * customer wants tighter / looser semantics (e.g. 60 s for
      * authentication flows where the user switches to an
@@ -690,7 +690,7 @@ internal object LegacyCore {
      * after a session_end are no-ops. Default true (every
      * foreground after end yields a new session).
      *
-     * Mirrors UXCam's `setMultiSessionRecord(boolean)`. Useful for
+     * Mirrors the reference mobile SDK's `setMultiSessionRecord(boolean)`. Useful for
      * customers tracking ONE-launch flows (kiosks, onboarding
      * wizards) where breaking into multiple sessions confuses
      * analytics.
@@ -702,7 +702,7 @@ internal object LegacyCore {
     fun isMultiSessionRecord(): Boolean = multiSessionRecord
 
     // -----------------------------------------------------------------
-    //  UXCam-parity deep-link helpers
+    //  industry-standard deep-link helpers
     // -----------------------------------------------------------------
 
     /**
@@ -765,7 +765,7 @@ internal object LegacyCore {
      * the standard lifecycle. Call [stop] first if you also want
      * to suppress that.
      *
-     * Mirrors UXCam's `cancelCurrentSession()`.
+     * Mirrors the reference mobile SDK's `cancelCurrentSession()`.
      */
     fun cancelCurrentSession() {
         val rt = runtime
@@ -791,7 +791,7 @@ internal object LegacyCore {
     }
 
     // -----------------------------------------------------------------
-    //  Verification listeners (UXCam onboarding parity)
+    //  Verification listeners (the reference mobile SDK onboarding parity)
     // -----------------------------------------------------------------
 
     /** Register a listener — invoked on the main thread immediately
@@ -850,7 +850,7 @@ internal object LegacyCore {
     }
 
     /**
-     * Emit a manual bug-report event. UXCam customers wire this to
+     * Emit a manual bug-report event. the reference mobile SDK customers wire this to
      * a "Send Feedback" / "Report Issue" button in their app —
      * the dashboard then surfaces these as flagged events in the
      * session timeline so support can jump straight to the
@@ -860,7 +860,7 @@ internal object LegacyCore {
      * pixels at the bug-report timestamp regardless of where in
      * the regular capture cadence we are.
      *
-     * Mirrors UXCam's `reportBugEvent(name, description)`. Any
+     * Mirrors the reference mobile SDK's `reportBugEvent(name, description)`. Any
      * additional structured properties the customer wants attached
      * (form fields, device state) go via the [properties] map.
      */
@@ -898,7 +898,7 @@ internal object LegacyCore {
     }
 
     /**
-     * Force-end the current session + start a fresh one. UXCam's
+     * Force-end the current session + start a fresh one. the reference mobile SDK's
      * `startNewSession()` — used by customers who track logical
      * session boundaries inside one app process (logout-then-login,
      * A/B re-bucketing, "start over" flows).
@@ -928,7 +928,7 @@ internal object LegacyCore {
      * Caps the wait so a wedged network can't hang the host
      * process. Default 5 000 ms.
      *
-     * Mirrors UXCam's `stopApplicationAndUploadData(runnable)`. We
+     * Mirrors the reference mobile SDK's `stopApplicationAndUploadData(runnable)`. We
      * expose a blocking wait rather than the callback variant
      * because the Kotlin coroutine + ExecutorService machinery
      * makes it equally simple.
@@ -963,7 +963,7 @@ internal object LegacyCore {
         if (config == null) return
         // If we backgrounded recently AND allowShortBreak is on,
         // cancel the pending end-of-session task — the user is
-        // resuming the SAME session, not starting a new one. UXCam
+        // resuming the SAME session, not starting a new one. the reference mobile SDK
         // parity: "switching to copy a 2FA code shouldn't fragment
         // analytics into two sessions."
         if (pendingShortBreakEnd != null) {
@@ -989,7 +989,7 @@ internal object LegacyCore {
         // (returns null after the first call), so subsequent
         // foregrounds don't re-emit.
         perfMetrics?.reportFirstForeground()
-        // Resume the UXCam-style continuous capture loop. Idempotent
+        // Resume the industry-standard continuous capture loop. Idempotent
         // — startPeriodic cancels the previous Runnable first, so an
         // accidental double-foreground (e.g. dialog dismiss racing
         // with onResume) won't double-schedule.

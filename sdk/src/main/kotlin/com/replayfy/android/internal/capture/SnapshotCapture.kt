@@ -55,9 +55,9 @@ internal class SnapshotCapture(
     @Volatile var enabled: Boolean = true
 
     /**
-     * UXCam-style periodic capture cadence.
+     * industry-standard periodic capture cadence.
      *
-     * UXCam reverse-engineered: their default capture rate is
+     * the reference mobile SDK reverse-engineered: their default capture rate is
      * ~2 FPS (every 500 ms) during an active session. Without this,
      * a session that doesn't change screens produces ONE snapshot
      * total and the player feels like a static image. With it, the

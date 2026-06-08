@@ -13,7 +13,7 @@ import java.lang.reflect.Field
  * Android doesn't expose a public API for this; we reflect into
  * `WindowManagerGlobal.mRoots` (private but stable across all API
  * levels we support, 21+). Same trick used by Stetho, LeakCanary,
- * Robolectric, UXCam, and Sentry's session replay.
+ * Robolectric, the reference mobile SDK, and Sentry's session replay.
  *
  * On Activity.getWindowManager() we find:
  *   - API ≥ 28: `mWindowManager` field pointing at a WindowManagerImpl
@@ -26,7 +26,7 @@ import java.lang.reflect.Field
  *
  * From a ViewRootImpl we pull `mView` to get the root [View].
  *
- * Mirrors `com.uxcam.internals.screenaction.bj#a` from UXCam's
+ * Mirrors `com.the reference mobile SDK.internals.screenaction.bj#a` from the reference mobile SDK's
  * screenaction module.
  */
 internal object WindowRootDiscovery {

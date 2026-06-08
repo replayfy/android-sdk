@@ -65,7 +65,7 @@ data class ReplayConfig(
     /**
      * Cadence of the continuous snapshot loop, in milliseconds.
      *
-     * Matches UXCam's default of ~2 FPS (500 ms). Lower values mean
+     * Matches the reference mobile SDK's default of ~2 FPS (500 ms). Lower values mean
      * smoother playback at the cost of CPU + upload bandwidth.
      * Floor is clamped to 200 ms inside [com.replayfy.android.internal.capture.SnapshotCapture]
      * to keep the main thread responsive.

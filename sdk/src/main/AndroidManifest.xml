@@ -13,7 +13,7 @@
             we capture the Application instance and wire up lifecycle
             hooks without the host app having to call any init code in
             their Application class. Same pattern AndroidX Startup, Firebase,
-            and UXCam use.
+            and the reference mobile SDK use.
 
             The `authorities` substitutes ${applicationId} at manifest
             merge time, guaranteeing a unique authority per host app —

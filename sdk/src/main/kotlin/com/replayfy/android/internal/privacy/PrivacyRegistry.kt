@@ -25,7 +25,7 @@ import java.util.WeakHashMap
  * automatically.
  *
  * Singleton because the public [com.replayfy.android.Replay.addPrivacyView]
- * API is static (matches UXCam + the iOS SDK pattern). One registry
+ * API is static (matches the reference mobile SDK + the iOS SDK pattern). One registry
  * per process.
  *
  * Mirrors the iOS [PrivacyRegistry.swift] — same triple-layer
@@ -43,10 +43,10 @@ internal object PrivacyRegistry {
     private val lock = Any()
 
     // -----------------------------------------------------------------
-    //  Bulk-privacy flags (UXCam parity)
+    //  Bulk-privacy flags (the reference mobile SDK parity)
     // -----------------------------------------------------------------
     //
-    // UXCam ships three opt-in switches that occlude broad classes of
+    // the reference mobile SDK ships three opt-in switches that occlude broad classes of
     // views without per-view registration:
     //
     //   occludeAllTextFields  → every EditText is treated as sensitive
@@ -65,7 +65,7 @@ internal object PrivacyRegistry {
     @Volatile var occludeAllScreen: Boolean = false
 
     // -----------------------------------------------------------------
-    //  Per-class occlusion (UXCam applyOcclusion / removeOcclusion)
+    //  Per-class occlusion (the reference mobile SDK applyOcclusion / removeOcclusion)
     // -----------------------------------------------------------------
     //
     // Customers can register arbitrary [View] subclass keys and every
@@ -82,7 +82,7 @@ internal object PrivacyRegistry {
         Collections.synchronizedSet(HashSet())
 
     /** Add a View subclass — every instance gets occluded on the
-     *  next snapshot. Idempotent. Mirrors UXCam's
+     *  next snapshot. Idempotent. Mirrors the reference mobile SDK's
      *  `applyOcclusion(Class<? extends View>)`. */
     fun applyOcclusion(viewClass: Class<out View>) {
         synchronized(occludedClasses) { occludedClasses.add(viewClass) }

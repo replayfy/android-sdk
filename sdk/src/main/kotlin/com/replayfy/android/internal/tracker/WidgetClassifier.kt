@@ -28,7 +28,7 @@ import androidx.annotation.VisibleForTesting
  * underlying View is an ImageButton — matches what the user sees.
  *
  * Mirrors the algorithm in
- * uxcam-flutter/lib/src/smart_events/uxcam_widget_classifier.dart
+ * the reference mobile SDK-flutter/lib/src/smart_events/the reference mobile SDK_widget_classifier.dart
  * adapted from Flutter Element types to Android Views.
  */
 internal object WidgetClassifier {

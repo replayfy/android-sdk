@@ -38,7 +38,7 @@ internal class BatchUploader(
      * Callback fired the first time a batch successfully reaches
      * the backend. Used by [com.replayfy.android.internal.LegacyCore]
      * to drain the verification-listener list registered via
-     * `Replay.addVerificationListener` — mirrors UXCam's
+     * `Replay.addVerificationListener` — mirrors the reference mobile SDK's
      * `VerificationListener.onVerificationSuccess`.
      *
      * One-shot: after firing once the closure is cleared so

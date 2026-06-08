@@ -22,9 +22,9 @@ import android.content.SharedPreferences
  * Stored in SharedPreferences (sync API — durable across launches
  * + survives uninstall only if backup is configured). Defaults are
  * **opted in** for both flags — customers MUST take action to
- * opt out, matching UXCam's semantics + most analytics SDKs.
+ * opt out, matching the reference mobile SDK's semantics + most analytics SDKs.
  *
- * Mirrors UXCam's `optOutOverall(boolean)` + `optOutSchematicRecordings(boolean)`
+ * Mirrors the reference mobile SDK's `optOutOverall(boolean)` + `optOutSchematicRecordings(boolean)`
  * APIs. Read by [LegacyCore] at the top of every emit / capture
  * path so flips take effect on the next event without waiting for
  * a process restart.

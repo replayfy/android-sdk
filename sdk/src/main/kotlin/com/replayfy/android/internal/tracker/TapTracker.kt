@@ -18,7 +18,7 @@ import com.replayfy.android.internal.privacy.PrivacyRegistry
  * Hooks into the host app's [Application.ActivityLifecycleCallbacks].
  * On every onActivityResumed / onActivityStarted, we schedule a tree
  * walk via [Handler] (coalesced — multiple lifecycle events in the
- * same frame produce ONE scan, matching UXCam's `loopLayout` design).
+ * same frame produce ONE scan, matching the reference mobile SDK's `loopLayout` design).
  *
  * The scan:
  *   1. Get all window roots via [WindowRootDiscovery] (includes
@@ -30,8 +30,8 @@ import com.replayfy.android.internal.privacy.PrivacyRegistry
  * Tap → emits a `TapEventData` via [emit] which the orchestrator
  * relays as a `tap` ReplayEvent.
  *
- * Mirrors `com.uxcam.screenaction.tracker.ScreenActionTracker` from
- * the UXCam decompiled source. We keep the same name shape so the
+ * Mirrors `com.the reference mobile SDK.screenaction.tracker.ScreenActionTracker` from
+ * the the reference mobile SDK decompiled source. We keep the same name shape so the
  * decompiled-to-Kotlin mapping is obvious in code review.
  */
 internal class TapTracker(
@@ -295,7 +295,7 @@ internal class TapTracker(
 
     private fun updateRoute(activity: Activity) {
         // Default route = activity class simple name. tagScreenName()
-        // overrides via setRoute(). Matches UXCam's auto-tagging
+        // overrides via setRoute(). Matches the reference mobile SDK's auto-tagging
         // behaviour. Opt-out: customers who tag manually set
         // ReplayConfig(autoScreenName=false) — then this method is
         // a no-op and the route stays whatever the last

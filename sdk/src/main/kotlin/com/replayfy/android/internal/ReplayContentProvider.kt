@@ -14,7 +14,7 @@ import android.net.Uri
  * lifecycle observers without the host app having to write any
  * Application.onCreate code.
  *
- * Same pattern AndroidX Startup, Firebase, Crashlytics, and UXCam all
+ * Same pattern AndroidX Startup, Firebase, Crashlytics, and the reference mobile SDK all
  * use. The other ContentProvider methods (query/insert/update/delete/
  * getType) are required by the abstract base but are never called for
  * us — we always return null/0.

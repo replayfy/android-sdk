@@ -13,8 +13,8 @@
 //
 // These come from JNI / NDK code in the host app (game engines,
 // Rust/C++ libs linked via cargo-ndk, OpenGL/Metal-equivalent
-// frameworks). UXCam catches them via libunwindstack + a private
-// fork of Google Breakpad; we go simpler — sigaction + libunwind
+// frameworks). The reference mobile SDK catches them via libunwindstack
+// + a private fork of Google Breakpad; we go simpler — sigaction + libunwind
 // (NDK-bundled) gives a usable stack at a fraction of the binary
 // size.
 //

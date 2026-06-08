@@ -157,7 +157,7 @@ internal class RemoteConfigFetcher(
         const val KEY_PAYLOAD = "payload_json"
         const val KEY_FETCHED_AT = "fetched_at_ms"
 
-        /** 15 minutes — matches UXCam + balances "customers see flips
+        /** 15 minutes — matches the reference mobile SDK + balances "customers see flips
          *  reasonably fast" against "we don't hammer the backend from
          *  every device in the field". */
         const val REFRESH_INTERVAL_MS: Long = 15 * 60 * 1000L

@@ -186,7 +186,7 @@ object Replay {
      * In-memory only; a process restart resets to running. Use
      * [Replay.optOutSchematicRecordings] for a durable opt-out.
      *
-     * Mirrors UXCam's `pauseScreenRecording()`.
+     * Mirrors the reference mobile SDK's `pauseScreenRecording()`.
      */
     @JvmStatic
     fun pauseRecording() {
@@ -195,7 +195,7 @@ object Replay {
 
     /**
      * Resume schematic capture after [pauseRecording].
-     * Mirrors UXCam's `resumeScreenRecording()`.
+     * Mirrors the reference mobile SDK's `resumeScreenRecording()`.
      */
     @JvmStatic
     fun resumeRecording() {
@@ -211,7 +211,7 @@ object Replay {
      * this when the user triggers a "delete my activity" / "clear
      * recent history" flow AFTER content has already been captured.
      *
-     * Mirrors UXCam's `cancelCurrentSession()`.
+     * Mirrors the reference mobile SDK's `cancelCurrentSession()`.
      */
     @JvmStatic
     fun cancelSession() {
@@ -219,7 +219,7 @@ object Replay {
     }
 
     // ------------------------------------------------------------------
-    //  UXCam-parity GDPR opt-in / opt-out
+    //  industry-standard GDPR opt-in / opt-out
     // ------------------------------------------------------------------
 
     /**
@@ -229,7 +229,7 @@ object Replay {
      * call again with false (or your in-app "rejoin" toggle does)
      * to start recording again.
      *
-     * Mirrors UXCam's `optOutOverall()` / `optInOverall()` pair —
+     * Mirrors the reference mobile SDK's `optOutOverall()` / `optInOverall()` pair —
      * we collapse the two into one boolean call since that's the
      * idiomatic Kotlin / Android shape.
      */
@@ -250,7 +250,7 @@ object Replay {
      * capture stops but every other event type keeps flowing.
      * Persisted across launches.
      *
-     * Mirrors UXCam's `optOutOfSchematicRecordings()` /
+     * Mirrors the reference mobile SDK's `optOutOfSchematicRecordings()` /
      * `optIntoSchematicRecordings()`.
      */
     @JvmStatic
@@ -263,7 +263,7 @@ object Replay {
     fun isOptedOutSchematicRecordings(): Boolean = LegacyCore.isSchematicOptedOut()
 
     // ------------------------------------------------------------------
-    //  UXCam-parity deep-link helpers
+    //  industry-standard deep-link helpers
     // ------------------------------------------------------------------
 
     /**
@@ -277,7 +277,7 @@ object Replay {
      * `app.replayfy.io/sessions/<sessionId>`. Self-hosted
      * customers automatically get their own host substituted.
      *
-     * Mirrors UXCam's `urlForCurrentSession()`.
+     * Mirrors the reference mobile SDK's `urlForCurrentSession()`.
      */
     @JvmStatic
     fun urlForCurrentSession(): String? = LegacyCore.urlForCurrentSession()
@@ -287,7 +287,7 @@ object Replay {
      * the active distinctId) on the dashboard, or null when no
      * `identify(distinctId)` has been called.
      *
-     * Mirrors UXCam's `urlForCurrentUser()`.
+     * Mirrors the reference mobile SDK's `urlForCurrentUser()`.
      */
     @JvmStatic
     fun urlForCurrentUser(): String? = LegacyCore.urlForCurrentUser()
@@ -298,7 +298,7 @@ object Replay {
      * [addPrivacyView]. Useful default-on PII protection when the
      * app routinely handles sensitive input.
      *
-     * Mirrors UXCam's `occludeAllTextFields(boolean)`.
+     * Mirrors the reference mobile SDK's `occludeAllTextFields(boolean)`.
      */
     @JvmStatic
     fun occludeAllTextFields(occlude: Boolean) {
@@ -310,7 +310,7 @@ object Replay {
      * Occlude every [android.widget.TextView] (and subclasses like
      * [android.widget.Button]) — anything that displays text.
      *
-     * Mirrors UXCam's `occludeAllTextView()`. Boolean variant +
+     * Mirrors the reference mobile SDK's `occludeAllTextView()`. Boolean variant +
      * one-line "redact ALL text" toggle.
      */
     @JvmStatic
@@ -330,7 +330,7 @@ object Replay {
      * Cheap when no classes registered (~zero overhead). Class set
      * size is typically single-digit in practice.
      *
-     * Mirrors UXCam's `applyOcclusion(Class<? extends View>)`.
+     * Mirrors the reference mobile SDK's `applyOcclusion(Class<? extends View>)`.
      */
     @JvmStatic
     fun applyOcclusion(viewClass: Class<out View>) {
@@ -339,7 +339,7 @@ object Replay {
     }
 
     /** Unregister a previously-added occluded class. Safe to call
-     *  for classes that were never registered. Mirrors UXCam's
+     *  for classes that were never registered. Mirrors the reference mobile SDK's
      *  `removeOcclusion(Class<? extends View>)`. */
     @JvmStatic
     fun removeOcclusion(viewClass: Class<out View>) {
@@ -353,7 +353,7 @@ object Replay {
      * the customer doesn't want ANY pixel data to leave the device
      * (e.g. health records, banking pin pad).
      *
-     * Mirrors UXCam's `occludeSensitiveScreen(boolean)`. Set false
+     * Mirrors the reference mobile SDK's `occludeSensitiveScreen(boolean)`. Set false
      * to restore normal capture.
      */
     @JvmStatic
@@ -376,7 +376,7 @@ object Replay {
      * occluded). Calling it twice without a snapshot in between
      * REPLACES the prior set rather than appending.
      *
-     * Mirrors UXCam's `occludeRectsOnNextFrame(rects)`.
+     * Mirrors the reference mobile SDK's `occludeRectsOnNextFrame(rects)`.
      */
     @JvmStatic
     fun occludeRectsOnNextFrame(rects: List<android.graphics.Rect>) {
@@ -390,7 +390,7 @@ object Replay {
      * from [track] event properties which only attach to a single
      * event.
      *
-     * Mirrors UXCam's `setUserProperty(key, value)` per-primitive
+     * Mirrors the reference mobile SDK's `setUserProperty(key, value)` per-primitive
      * overloads — Kotlin's [Any?] subsumes all of them.
      *
      * Common use: `setUserProperty("plan", "pro")`,
@@ -415,7 +415,7 @@ object Replay {
     }
 
     // ------------------------------------------------------------------
-    //  UXCam-parity session-control surface
+    //  industry-standard session-control surface
     // ------------------------------------------------------------------
 
     /**
@@ -424,7 +424,7 @@ object Replay {
      * routes manually via [tagScreenName] for a flow where Activity
      * class names don't map cleanly to user-meaningful screens.
      *
-     * Mirrors UXCam's `setAutomaticScreenNameTagging(boolean)`.
+     * Mirrors the reference mobile SDK's `setAutomaticScreenNameTagging(boolean)`.
      */
     @JvmStatic
     fun setAutomaticScreenNameTagging(enabled: Boolean) {
@@ -437,7 +437,7 @@ object Replay {
      * a HMS token. Dashboard wiring (chip on player header) is
      * tracked separately.
      *
-     * Mirrors UXCam's `setPushNotificationToken(token)`.
+     * Mirrors the reference mobile SDK's `setPushNotificationToken(token)`.
      */
     @JvmStatic
     @JvmOverloads
@@ -450,7 +450,7 @@ object Replay {
      * "starred sessions" filter on the dashboard. One-shot — call
      * once per session you want flagged.
      *
-     * Mirrors UXCam's `markSessionAsFavorite()`.
+     * Mirrors the reference mobile SDK's `markSessionAsFavorite()`.
      */
     @JvmStatic
     fun markSessionAsFavorite() {
@@ -463,7 +463,7 @@ object Replay {
      * event-level. Use for "this session is in A/B variant X" or
      * "this session belongs to the holiday checkout flow".
      *
-     * Mirrors UXCam's `addTagWithProperties(name, properties)`.
+     * Mirrors the reference mobile SDK's `addTagWithProperties(name, properties)`.
      */
     @JvmStatic
     @JvmOverloads
@@ -478,7 +478,7 @@ object Replay {
      * flows. Drains the old session's events first so they don't
      * bleed into the new one.
      *
-     * Mirrors UXCam's `startNewSession()`.
+     * Mirrors the reference mobile SDK's `startNewSession()`.
      */
     @JvmStatic
     fun startNewSession() {
@@ -524,7 +524,7 @@ object Replay {
      * first interactive touch only when this flag is true, so
      * non-users pay zero overhead.
      *
-     * Mirrors UXCam's `enableAdvancedGestureRecognizer(boolean)`.
+     * Mirrors the reference mobile SDK's `enableAdvancedGestureRecognizer(boolean)`.
      */
     @JvmStatic
     fun enableAdvancedGestureRecognizer(enabled: Boolean) {
@@ -537,7 +537,7 @@ object Replay {
      * WITHOUT ending the session. The same session resumes when
      * the user returns. Default off (every background ends).
      *
-     * Mirrors UXCam's `allowShortBreakForAnotherApp(boolean)`. Useful
+     * Mirrors the reference mobile SDK's `allowShortBreakForAnotherApp(boolean)`. Useful
      * when the user routinely switches to another app for short
      * operations (copy 2FA code, switch to authenticator).
      */
@@ -552,7 +552,7 @@ object Replay {
      * only ONE session fires per process — subsequent foregrounds
      * after a session_end are no-ops. Default true.
      *
-     * Mirrors UXCam's `setMultiSessionRecord(boolean)`.
+     * Mirrors the reference mobile SDK's `setMultiSessionRecord(boolean)`.
      */
     @JvmStatic
     fun setMultiSessionRecord(enabled: Boolean) {
@@ -572,7 +572,7 @@ object Replay {
      * verified will fire immediately, but verification itself
      * does not happen twice.
      *
-     * Mirrors UXCam's `addVerificationListener(VerificationListener)`.
+     * Mirrors the reference mobile SDK's `addVerificationListener(VerificationListener)`.
      */
     @JvmStatic
     fun addVerificationListener(listener: Runnable) {
@@ -599,7 +599,7 @@ object Replay {
      * snapshot so support can jump straight to the relevant
      * moment with the screen the user was looking at.
      *
-     * Mirrors UXCam's `reportBugEvent(name, description)`.
+     * Mirrors the reference mobile SDK's `reportBugEvent(name, description)`.
      */
     @JvmStatic
     @JvmOverloads
@@ -618,7 +618,7 @@ object Replay {
      * when you want strong-delivery semantics for the current
      * session's events. Default 5 000 ms.
      *
-     * Mirrors UXCam's `stopApplicationAndUploadData(runnable)`. We
+     * Mirrors the reference mobile SDK's `stopApplicationAndUploadData(runnable)`. We
      * expose a blocking wait rather than the callback variant —
      * the Kotlin coroutine + ExecutorService machinery makes that
      * equally simple at the call site.

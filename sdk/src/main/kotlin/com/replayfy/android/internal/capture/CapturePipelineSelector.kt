@@ -21,7 +21,7 @@ import android.view.Window
  * frame level, and [PixelCopyCapturePipeline] caches its
  * [android.os.HandlerThread] across calls.
  *
- * Mirrors UXCam's `CapturePipelineSelector` (which adds a third
+ * Mirrors the reference mobile SDK's `CapturePipelineSelector` (which adds a third
  * SurfaceControl-experimental pipeline for API 30+ — we don't ship
  * that path yet; PixelCopy covers the same hardware-surface gap).
  */

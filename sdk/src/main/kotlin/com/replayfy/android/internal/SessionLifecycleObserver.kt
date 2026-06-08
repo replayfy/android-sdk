@@ -15,7 +15,7 @@ import androidx.lifecycle.LifecycleOwner
  *   debounce (so an Activity-to-Activity transition doesn't look like
  *   "app went to background then back").
  *
- * Same pattern UXCam uses (see ProcessLifecycleObserver / bi.b in their
+ * Same pattern the reference mobile SDK uses (see ProcessLifecycleObserver / bi.b in their
  * decompiled source).
  */
 internal class SessionLifecycleObserver(

@@ -81,7 +81,7 @@ internal object BitmapCapture {
         // dispatch. The pipeline's callback may land on a background
         // thread where View walking is unsafe.
         val privacyRects = try {
-            // Whole-screen-occlude opt-in (UXCam-parity): replace
+            // Whole-screen-occlude opt-in (industry-standard): replace
             // the per-view rect set with a single rect covering the
             // entire root. Hides absolutely everything regardless
             // of class-based opt-ins.

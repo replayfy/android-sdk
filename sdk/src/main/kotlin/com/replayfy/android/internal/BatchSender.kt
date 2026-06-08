@@ -80,7 +80,7 @@ internal class BatchSender(
             // ingest billable bytes. Express's `json()` middleware
             // auto-inflates when Content-Encoding: gzip is set
             // (inflate:true default), so no backend change needed.
-            // UXCam bundles minizip on iOS for the same purpose;
+            // the reference mobile SDK bundles minizip on iOS for the same purpose;
             // Android they use OkHttp's gzip request interceptor
             // pattern.
             //

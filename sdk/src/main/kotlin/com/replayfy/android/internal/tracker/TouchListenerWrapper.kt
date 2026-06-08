@@ -23,7 +23,7 @@ import kotlin.math.abs
  * (after walking every window root via WindowRootDiscovery) catches
  * everything.
  *
- * Mirrors `com.uxcam.internals.screenaction.bt` from the UXCam
+ * Mirrors `com.the reference mobile SDK.internals.screenaction.bt` from the the reference mobile SDK
  * decompiled source.
  */
 internal class TouchListenerWrapper(
@@ -133,7 +133,7 @@ internal class TouchListenerWrapper(
             object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
                 // One event per pinch END so a single gesture produces
                 // one timeline entry (mirrors the iOS choice +
-                // matches UXCam).
+                // matches the reference mobile SDK).
                 override fun onScaleEnd(detector: ScaleGestureDetector) {
                     val v = currentView ?: return
                     fire(

@@ -24,7 +24,7 @@ import android.widget.TextView
  * future privacy config (rarely useful for analytics, lots of risk).
  *
  * Mirrors the algorithm in
- * uxcam-flutter/lib/src/smart_events/uxcam_widget_extractor.dart
+ * the reference mobile SDK-flutter/lib/src/smart_events/the reference mobile SDK_widget_extractor.dart
  * adapted from Flutter widgets to Android Views.
  */
 internal object ValueExtractor {

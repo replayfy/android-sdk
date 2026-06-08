@@ -10,7 +10,7 @@ plugins {
 
 android {
     namespace = "com.replayfy.android"
-    // minSdk 21 matches UXCam's floor and covers >99% of active devices.
+    // minSdk 21 matches the reference mobile SDK's floor and covers >99% of active devices.
     // Drops Android 4.x — no real-world replay value there.
     compileSdk = 35
 

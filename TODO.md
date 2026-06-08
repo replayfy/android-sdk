@@ -19,7 +19,7 @@
 >    a disk record left by a prior process. (Native console + NDK-crash
 >    capture, including NDK previous-process recovery, are now re-homed onto
 >    the live `ReplayCore`.)
-> 2. Re-home the ~25 no-op facade methods (UXCam-parity; our own design, not
+> 2. Re-home the ~25 no-op facade methods (industry-standard; our own design, not
 >    a reference port).
 
 ### Problem
