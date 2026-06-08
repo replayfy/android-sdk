@@ -14,9 +14,11 @@
 >    runtime anyway).
 >
 > **Remaining:**
-> 1. Re-home **console + NDK-crash** capture (and previous-process crash
->    recovery) onto the live `ReplayCore` so they actually record — today
->    they're absent on the live path (a latent bug surfaced during dedup).
+> 1. Previous-process **JVM** crash recovery — the live handler
+>    (`MobileCrashHandler`) catches new uncaught exceptions but doesn't drain
+>    a disk record left by a prior process. (Native console + NDK-crash
+>    capture, including NDK previous-process recovery, are now re-homed onto
+>    the live `ReplayCore`.)
 > 2. Re-home the ~25 no-op facade methods (UXCam-parity; our own design, not
 >    a reference port).
 

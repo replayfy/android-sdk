@@ -9,6 +9,8 @@ import android.provider.Settings
 import android.util.DisplayMetrics
 import com.replayfy.android.ReplayConfig
 import com.replayfy.android.internal.OptOutStore
+import com.replayfy.android.internal.console.ConsoleCapture
+import com.replayfy.android.internal.crash.NativeCrashHandler
 import com.replayfy.android.internal.privacy.PrivacyRegistry
 import org.json.JSONObject
 import java.util.concurrent.Executors
@@ -40,6 +42,7 @@ class ReplayCore private constructor() {
     private var screenshots: MobileScreenshots? = null
     private var touch: MobileTouchCapture? = null
     private var perf: MobilePerfMonitor? = null
+    private var consoleCapture: ConsoleCapture? = null
     // Live-presence socket (mirrors the web SDK's presence.ts): keeps this
     // session on the dashboard's online list for its lifetime; the backend
     // LiveGateway flips the EndUser online on connect / offline 10s after
@@ -172,6 +175,28 @@ class ReplayCore private constructor() {
             // Uncaught-exception crash reporting.
             if (config.captureErrors) {
                 MobileCrashHandler.install { name, reason, stack -> sendCrash(name, reason, stack) }
+                // NDK / native-signal crashes (SIGSEGV/SIGBUS/SIGABRT/…) the
+                // JVM handler can't see. install() also drains a record left
+                // by a previous-process native crash. Optional — no-ops when
+                // libreplay_crash.so wasn't packed. (Re-homed from the old
+                // LegacyCore.autoBootstrap, which dropped these — #119.)
+                try {
+                    NativeCrashHandler(
+                        context = app,
+                        onRecoveredCrash = { rec -> sendCrash(rec.className, rec.message, rec.stack) },
+                    ).install()
+                } catch (t: Throwable) {
+                    android.util.Log.w("ReplaySdk", "NDK signal handler init failed: ${t.message}")
+                }
+            }
+            // Native console capture (System.out/err tee → log events). Gated
+            // on the resolved captureConsole; re-homed from LegacyCore (#119).
+            if (captureConsole) {
+                val console = ConsoleCapture(emit = { e ->
+                    sendLog(e.level, if (e.stack.isNullOrBlank()) e.message else "${e.message}\n${e.stack}")
+                })
+                console.start()
+                consoleCapture = console
             }
 
             // Drain anything queued during the /start round-trip, then go
@@ -201,6 +226,7 @@ class ReplayCore private constructor() {
     fun stop() {
         screenshots?.stop(); screenshots = null
         perf?.stop(); perf = null
+        consoleCapture?.stop(); consoleCapture = null
         collector?.stop(); collector = null
         presence?.stop(); presence = null
         sessionId = null
