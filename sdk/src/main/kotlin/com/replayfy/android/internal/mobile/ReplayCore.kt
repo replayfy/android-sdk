@@ -24,6 +24,13 @@ class ReplayCore private constructor() {
     companion object {
         @JvmStatic
         val shared = ReplayCore()
+
+        /** Wrapper-SDK tag (e.g. "react-native") added to the /start payload
+         *  so the dashboard can show "Captured by …" while the platform stays
+         *  ios/android. Set before start(). */
+        @Volatile
+        @JvmStatic
+        var framework: String? = null
     }
 
     private var transport: MobileTransport? = null
@@ -72,7 +79,7 @@ class ReplayCore private constructor() {
     /** Sensitive decor-view-coordinate rects to mask in screenshots. */
     var privacyRectsProvider: () -> List<Rect> = { emptyList() }
 
-    fun start(app: Application, projectKey: String, host: String) {
+    fun start(app: Application, projectKey: String, host: String, recordScreen: Boolean = true) {
         // Idempotent: a second Replay.init (e.g. on an Activity recreate)
         // must not wire a second collector / screenshot timer / perf
         // sampler onto the same singleton.
@@ -144,7 +151,8 @@ class ReplayCore private constructor() {
             this.perf = perf
 
             collector.start()
-            screenshots.start()
+            // recordScreen=false → capture events only, no frames archive.
+            if (recordScreen) screenshots.start()
             perf.start()
             currentActivity?.let { touch.attach(it) }
             // Uncaught-exception crash reporting.
@@ -259,6 +267,7 @@ class ReplayCore private constructor() {
             put("projectKey", projectKey)
             put("platform", "android")
             put("trackerVersion", "2.0.0")
+            framework?.takeIf { it.isNotEmpty() }?.let { put("framework", it) }
             put("revID", revID)
             put("userUUID", uuid)
             put("userOSVersion", Build.VERSION.RELEASE ?: "")

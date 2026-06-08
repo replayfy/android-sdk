@@ -41,7 +41,17 @@ object Replay {
         // + binary message protocol → /v1/mobile/*. Replaces the legacy
         // per-snapshot/asset engine (no backward compatibility).
         val app = context.applicationContext as? Application ?: return
-        ReplayCore.shared.start(app, config.apiKey, config.apiHost)
+        ReplayCore.shared.start(app, config.apiKey, config.apiHost, config.captureSnapshotPixels)
+    }
+
+    /**
+     * Tag this session's wrapper SDK (e.g. "react-native"). Sent on /start so
+     * the dashboard shows "Captured by …" while the platform stays android.
+     * Call before [init].
+     */
+    @JvmStatic
+    fun setFramework(name: String) {
+        ReplayCore.framework = name
     }
 
     /**
@@ -651,5 +661,53 @@ object Replay {
         LegacyCore.logExplicit(level = level, message = message, stack = stack)
         // Bridge into the binary message stream → dashboard console tab.
         ReplayCore.shared.sendLog(level, if (stack != null) "$message\n$stack" else message)
+    }
+
+    // ------------------------------------------------------------------
+    //  Live-engine passthroughs for the React Native bridge.
+    //
+    //  Forward straight to the live ReplayCore engine (the one
+    //  Replay.init drives) rather than the legacy facade methods, so RN
+    //  sessions get real metadata / network / session-id / teardown even
+    //  before the LegacyCore consolidation (TODO #119). Members on the
+    //  Replay object, not free functions — per the repo's facade rule.
+    // ------------------------------------------------------------------
+
+    /** Live sticky metadata (single key/value). */
+    @JvmStatic
+    fun recordMetadata(key: String, value: String) {
+        ReplayCore.shared.sendMetadata(key, value)
+    }
+
+    /** Forward one captured RN network call to the live engine.
+     *  `request` / `response` are JSON strings assembled JS-side. */
+    @JvmStatic
+    fun recordNetwork(
+        url: String,
+        method: String,
+        request: String,
+        response: String,
+        status: Int,
+        duration: Long,
+    ) {
+        ReplayCore.shared.sendNetwork(
+            type = "fetch",
+            method = method,
+            url = url,
+            request = request,
+            response = response,
+            status = status.toLong(),
+            duration = if (duration < 0) 0L else duration,
+        )
+    }
+
+    /** Active live-engine session id (null when not recording). */
+    @JvmStatic
+    fun currentSessionId(): String? = ReplayCore.shared.sessionId
+
+    /** Stop the live recording engine + flush. */
+    @JvmStatic
+    fun stopEngine() {
+        ReplayCore.shared.stop()
     }
 }
