@@ -7,6 +7,8 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.DisplayMetrics
+import com.replayfy.android.ReplayConfig
+import com.replayfy.android.internal.OptOutStore
 import com.replayfy.android.internal.privacy.PrivacyRegistry
 import org.json.JSONObject
 import java.util.concurrent.Executors
@@ -58,6 +60,9 @@ class ReplayCore private constructor() {
     private val preStart = ArrayList<ByteArray>()
     @Volatile private var ready = false
     @Volatile private var started = false
+    // ReplayConfig.autoScreenName — gates the auto screen-name emission from
+    // the Activity lifecycle callback.
+    @Volatile private var autoScreenName = true
 
     @Volatile private var currentActivity: Activity? = null
     @Volatile var sessionId: String? = null
@@ -79,14 +84,21 @@ class ReplayCore private constructor() {
     /** Sensitive decor-view-coordinate rects to mask in screenshots. */
     var privacyRectsProvider: () -> List<Rect> = { emptyList() }
 
-    fun start(app: Application, projectKey: String, host: String, recordScreen: Boolean = true) {
+    fun start(app: Application, config: ReplayConfig) {
         // Idempotent: a second Replay.init (e.g. on an Activity recreate)
         // must not wire a second collector / screenshot timer / perf
         // sampler onto the same singleton.
         if (started) return
+        // GDPR: honour an overall opt-out on the LIVE engine — never open a
+        // session while opted out (the legacy facade checked this; the live
+        // engine didn't).
+        if (OptOutStore(app).overallOptOut) return
         started = true
+        val projectKey = config.apiKey
+        val host = config.apiHost
         this.projectKey = projectKey
         this.host = host
+        autoScreenName = config.autoScreenName
         app.registerActivityLifecycleCallbacks(activityCallbacks)
         val transport = MobileTransport(host, projectKey)
         this.transport = transport
@@ -101,8 +113,10 @@ class ReplayCore private constructor() {
             if (!resp.record) return@execute
             sessionId = resp.sessionID
             startedAt = System.currentTimeMillis()
-            captureConsole = resp.captureConsole
-            captureNetwork = resp.captureNetwork
+            // Client config is the default; remote-config (the /start
+            // response) overrides it when the server specifies a value.
+            captureConsole = resp.captureConsole ?: config.captureConsole
+            captureNetwork = resp.captureNetwork ?: config.captureNetwork
 
             // Open the live-presence socket now that we have a session id. Uses
             // the distinct id known so far (identify() called before /start
@@ -151,12 +165,14 @@ class ReplayCore private constructor() {
             this.perf = perf
 
             collector.start()
-            // recordScreen=false → capture events only, no frames archive.
-            if (recordScreen) screenshots.start()
+            // captureSnapshotPixels=false → events only, no frames archive.
+            if (config.captureSnapshotPixels) screenshots.start()
             perf.start()
             currentActivity?.let { touch.attach(it) }
             // Uncaught-exception crash reporting.
-            MobileCrashHandler.install { name, reason, stack -> sendCrash(name, reason, stack) }
+            if (config.captureErrors) {
+                MobileCrashHandler.install { name, reason, stack -> sendCrash(name, reason, stack) }
+            }
 
             // Drain anything queued during the /start round-trip, then go
             // live. Holding the monitor across the flip keeps a concurrent
@@ -234,8 +250,10 @@ class ReplayCore private constructor() {
             screenshots?.resume()
             // Screen tracking → viewComponent message with the activity
             // class name (drives the dashboard Screens tab + route).
-            val name = activity.javaClass.simpleName
-            sendScreen(name, name, true)
+            if (autoScreenName) {
+                val name = activity.javaClass.simpleName
+                sendScreen(name, name, true)
+            }
         }
         override fun onActivityPaused(activity: Activity) {
             if (currentActivity === activity) {

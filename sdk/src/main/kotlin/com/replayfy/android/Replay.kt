@@ -41,7 +41,7 @@ object Replay {
         // + binary message protocol → /v1/mobile/*. Replaces the legacy
         // per-snapshot/asset engine (no backward compatibility).
         val app = context.applicationContext as? Application ?: return
-        ReplayCore.shared.start(app, config.apiKey, config.apiHost, config.captureSnapshotPixels)
+        ReplayCore.shared.start(app, config)
     }
 
     /**
@@ -236,6 +236,9 @@ object Replay {
     @JvmStatic
     fun optOutOverall(optOut: Boolean) {
         LegacyCore.setOverallOptOut(optOut)
+        // GDPR: enforce on the live engine — stop recording on opt-out. Opt-in
+        // takes effect on the next Replay.init / launch.
+        if (optOut) ReplayCore.shared.stop()
     }
 
     /** Whether the customer is currently opted out overall. */

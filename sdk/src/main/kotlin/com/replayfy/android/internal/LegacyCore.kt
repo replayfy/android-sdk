@@ -157,123 +157,15 @@ internal object LegacyCore {
             return
         }
 
-        // Register on the main thread — ProcessLifecycleOwner expects
-        // it. Bootstrap fires on the main thread (ContentProvider
-        // contract), so direct call is fine.
-        val observer = SessionLifecycleObserver(
-            onAppForegrounded = ::onAppForegrounded,
-            onAppBackgrounded = ::onAppBackgrounded,
-        )
-        try {
-            ProcessLifecycleOwner.get().lifecycle.addObserver(observer)
-            lifecycleObserver = observer
-        } catch (t: Throwable) {
-            // Lifecycle module not on the classpath, or test env without
-            // a real Lifecycle — log and continue. SDK will still work
-            // if the customer calls init explicitly.
-            android.util.Log.w(TAG, "ProcessLifecycleOwner unavailable: ${t.message}")
-        }
-
-        // Tap tracker attaches to the Application's
-        // ActivityLifecycleCallbacks here — earlier than init() so we
-        // catch the very first activity (otherwise the user's launcher
-        // activity could be onResume'd before init lands, and we'd
-        // miss every tap on the welcome screen).
-        val app = context.applicationContext as? Application
-        if (app != null) {
-            try {
-                val tracker = TapTracker(emit = ::emitTap)
-                tracker.attach(app)
-                tapTracker = tracker
-
-                // Snapshot pipeline. Shares the activity holder
-                // ownership with the tracker via TapTracker.currentActivity().
-                // Fires on screen resume + 500ms after each tap.
-                // Bitmap capture + asset uploader are wired in
-                // [init] once we have the api key — pre-init
-                // snapshots ship as tree-only.
-                val snapshot = SnapshotCapture(
-                    activityProvider = { tracker.currentActivity() },
-                    emit = ::emitSnapshot,
-                )
-                tracker.onScreenResumed = { snapshot.captureNow("screen_appeared") }
-                tracker.onTapEmitted = { snapshot.scheduleIdle() }
-                snapshotCapture = snapshot
-
-                // Native perf metrics — cold_start_ms,
-                // frame_drop_pct, frozen_frame_count, memory_rss_mb,
-                // thermal_state. Cold start emits separately from
-                // onAppForegrounded so we capture cold-launch →
-                // user-sees-app delay, not just process spin-up.
-                val perf = com.replayfy.android.internal.perf.PerfMetricsManager(
-                    context = app,
-                    onMetric = ::emitPerformance,
-                )
-                perf.start()
-                perfMetrics = perf
-
-                // Crash handler — install EARLY so we catch
-                // exceptions thrown during Application.onCreate /
-                // first-activity-onCreate (the most crash-prone
-                // moments in a session). Drain-on-install also
-                // recovers crashes from the previous process before
-                // anything else runs. The handler is config-
-                // independent (writes to disk regardless); if the
-                // recovered record arrives before runtime is ready,
-                // it's queued in pendingCrash and flushed on first
-                // session start.
-                val crash = com.replayfy.android.internal.crash.CrashHandler(
-                    context = app,
-                    onRecoveredCrash = ::onRecoveredCrash,
-                )
-                crash.install()
-                crashHandler = crash
-
-                // Native-signal handler. Catches SIGSEGV / SIGBUS /
-                // SIGABRT / SIGFPE / SIGILL / SIGTRAP raised by JNI
-                // + NDK code in the host app (game engines, Rust /
-                // C++ libs, OpenGL/Vulkan frameworks) that the JVM
-                // UncaughtExceptionHandler cannot see — by the time
-                // the JVM observes a native crash, the process is
-                // dead. The native handler writes a one-line record
-                // via async-signal-safe syscalls; we drain on next
-                // launch.
-                //
-                // Optional — gracefully no-ops when libreplay_crash.so
-                // wasn't packed (e.g. host app strips native libs
-                // aggressively).
-                try {
-                    com.replayfy.android.internal.crash.NativeCrashHandler(
-                        context = app,
-                        onRecoveredCrash = ::onRecoveredCrash,
-                    ).install()
-                } catch (t: Throwable) {
-                    android.util.Log.w(TAG, "NDK signal handler init failed: ${t.message}")
-                }
-
-                // Console capture — intercept System.out / System.err
-                // for stdout/stderr-routed logging (println,
-                // System.out.println, Timber-to-stdout configs).
-                // Starts UNCONDITIONALLY in autoBootstrap so logs from
-                // the host app's Application.onCreate land before
-                // Replay.init runs. init() turns it off if
-                // captureConsole=false on the supplied config.
-                //
-                // The public Replay.log() API bridges customer-side
-                // loggers (Timber, kotlin-logging) that don't route
-                // through stdout — android.util.Log is unreadable from
-                // user processes (READ_LOGS is platform-only post-
-                // Jelly-Bean), so explicit wiring is the only path
-                // for those frameworks.
-                val console = com.replayfy.android.internal.console.ConsoleCapture(
-                    emit = ::emitConsole,
-                )
-                console.start()
-                consoleCapture = console
-            } catch (t: Throwable) {
-                android.util.Log.w(TAG, "TapTracker attach failed: ${t.message}")
-            }
-        }
+        // Capture is owned entirely by the live ReplayCore engine (started
+        // by Replay.init). LegacyCore no longer installs its own lifecycle /
+        // tap / snapshot / perf / crash / NDK / console handlers: they
+        // duplicated the live engine (waste + a second uncaught-exception
+        // handler), and the legacy-only paths (console, NDK, crash recovery)
+        // routed to the inert runtime and were dropped. Opt-out is now
+        // enforced by ReplayCore itself. Re-homing console + NDK capture onto
+        // the live engine so they actually record is the remaining #119
+        // follow-up.
     }
 
     // -----------------------------------------------------------------
