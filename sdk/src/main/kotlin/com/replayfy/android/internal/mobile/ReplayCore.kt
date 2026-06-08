@@ -10,6 +10,7 @@ import android.util.DisplayMetrics
 import com.replayfy.android.ReplayConfig
 import com.replayfy.android.internal.OptOutStore
 import com.replayfy.android.internal.console.ConsoleCapture
+import com.replayfy.android.internal.crash.CrashHandler
 import com.replayfy.android.internal.crash.NativeCrashHandler
 import com.replayfy.android.internal.privacy.PrivacyRegistry
 import org.json.JSONObject
@@ -174,7 +175,16 @@ class ReplayCore private constructor() {
             currentActivity?.let { touch.attach(it) }
             // Uncaught-exception crash reporting.
             if (config.captureErrors) {
-                MobileCrashHandler.install { name, reason, stack -> sendCrash(name, reason, stack) }
+                // JVM crashes — disk-backed so the record survives the dying
+                // process and is recovered + sent on the NEXT launch (matches
+                // iOS's PLCrashReporter disk+recover model; a synchronous
+                // in-session send loses crashes that die before the batch
+                // flushes). install() also drains a previous-process record
+                // and chains to the app's handler (Crashlytics/Sentry fire).
+                CrashHandler(
+                    context = app,
+                    onRecoveredCrash = { rec -> sendCrash(rec.className, rec.message, rec.stack) },
+                ).install()
                 // NDK / native-signal crashes (SIGSEGV/SIGBUS/SIGABRT/…) the
                 // JVM handler can't see. install() also drains a record left
                 // by a previous-process native crash. Optional — no-ops when
