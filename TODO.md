@@ -2,7 +2,23 @@
 
 ## #119 — Consolidate `LegacyCore` into `ReplayCore` (remove the duplicate engine)
 
-**Status:** pending · **Priority:** high (includes a correctness gap)
+**Status:** in progress · **Priority:** high (includes a correctness gap)
+
+> **Done:**
+> 1. GDPR opt-out gap closed — the live `ReplayCore` refuses to start while
+>    opted out and stops on `optOutOverall(true)`.
+> 2. Duplicate-handler dedup — `LegacyCore.autoBootstrap` no longer installs
+>    its own lifecycle / tap / snapshot / perf / crash / NDK / console
+>    handlers (they duplicated the live engine + chained a second
+>    uncaught-exception handler; the legacy-only paths dropped to the inert
+>    runtime anyway).
+>
+> **Remaining:**
+> 1. Re-home **console + NDK-crash** capture (and previous-process crash
+>    recovery) onto the live `ReplayCore` so they actually record — today
+>    they're absent on the live path (a latent bug surfaced during dedup).
+> 2. Re-home the ~25 no-op facade methods (UXCam-parity; our own design, not
+>    a reference port).
 
 ### Problem
 The SDK currently runs two engines in parallel:
