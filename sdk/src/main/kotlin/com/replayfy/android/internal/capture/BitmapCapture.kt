@@ -101,7 +101,7 @@ internal object BitmapCapture {
                 PrivacyRegistry.sensitiveBounds(root) +
                     PrivacyRegistry.composeBoundsRelativeTo(root) +
                     PrivacyRegistry.bulkBounds(root) +
-                    PrivacyRegistry.consumePendingFrameRects()
+                    PrivacyRegistry.consumePendingFrameRects().map { it.rect }
             }
         } catch (t: Throwable) {
             // Privacy lookup should never throw, but soft-fail

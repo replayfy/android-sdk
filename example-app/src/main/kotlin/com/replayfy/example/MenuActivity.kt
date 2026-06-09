@@ -80,6 +80,20 @@ class MenuActivity : AppCompatActivity() {
         )
         setContentView(root)
 
+        // Headless crash-test hook. Launch with:
+        //   adb shell am start -n <pkg>/.MenuActivity --es REPLAY_AUTOCRASH jvm
+        // to throw an uncaught JVM exception ~6s after start (enough for the
+        // session to register), with NO auto-navigate. The crash is persisted
+        // by the SDK's crash handler and surfaced on the NEXT launch.
+        val autoCrash = intent.getStringExtra("REPLAY_AUTOCRASH")
+        if (!autoCrash.isNullOrEmpty()) {
+            handler.postDelayed({
+                android.util.Log.w("ReplayExample", "auto-crash: $autoCrash")
+                throw RuntimeException("Headless auto-crash: $autoCrash")
+            }, 6000)
+            return
+        }
+
         // Simulate the user starting the game after a beat.
         handler.postDelayed({
             Replay.track("menu_play_clicked")

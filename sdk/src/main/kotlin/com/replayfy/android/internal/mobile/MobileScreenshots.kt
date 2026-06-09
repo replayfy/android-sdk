@@ -26,7 +26,7 @@ import java.util.concurrent.Executors
 class MobileScreenshots(
     private val transport: MobileTransport,
     private val activityProvider: () -> Activity?,
-    private val privacyRects: () -> List<Rect>,
+    private val privacyRects: () -> List<com.replayfy.android.MaskRect>,
 ) {
     private val lock = Any()
     private val pending = ArrayList<Pair<ByteArray, Long>>()
@@ -114,7 +114,7 @@ class MobileScreenshots(
         }
     }
 
-    private fun drawFallback(view: View, w: Int, h: Int, rects: List<Rect>) {
+    private fun drawFallback(view: View, w: Int, h: Int, rects: List<com.replayfy.android.MaskRect>) {
         try {
             val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             view.draw(Canvas(bmp))
@@ -122,18 +122,70 @@ class MobileScreenshots(
         } catch (e: Throwable) { /* skip frame */ }
     }
 
-    private fun encode(bmp: Bitmap, rects: List<Rect>) {
+    /** Obscure a region of [src] onto [canvas] via downscale → upscale.
+     *  The downscale averages pixels into representative block colours; the
+     *  upscale's [smooth] flag picks the look:
+     *   • `smooth = true`  → bilinear upscale = soft **blur**.
+     *   • `smooth = false` → nearest-neighbour upscale = hard **pixelate**
+     *     mosaic blocks.
+     *  Dependency-free + works on every API level. Falls back to a solid box
+     *  if anything throws — never leave pixels exposed. */
+    private fun mosaicRegion(
+        src: Bitmap, canvas: Canvas, dst: Rect, downscale: Int,
+        smooth: Boolean, fallback: Paint,
+    ) {
+        val left = dst.left.coerceIn(0, src.width)
+        val top = dst.top.coerceIn(0, src.height)
+        val right = dst.right.coerceIn(0, src.width)
+        val bottom = dst.bottom.coerceIn(0, src.height)
+        val w = right - left
+        val h = bottom - top
+        if (w <= 0 || h <= 0) return
+        try {
+            val region = Bitmap.createBitmap(src, left, top, w, h)
+            val sw = (w / downscale).coerceAtLeast(1)
+            val sh = (h / downscale).coerceAtLeast(1)
+            // Average down (filter=true) for representative block colours.
+            val small = Bitmap.createScaledBitmap(region, sw, sh, true)
+            // Up: smooth=blur, hard=mosaic.
+            val big = Bitmap.createScaledBitmap(small, w, h, smooth)
+            canvas.drawBitmap(big, left.toFloat(), top.toFloat(), null)
+            region.recycle()
+            if (small != region) small.recycle()
+            if (big != small) big.recycle()
+        } catch (e: Throwable) {
+            canvas.drawRect(dst, fallback)
+        }
+    }
+
+    private fun encode(bmp: Bitmap, rects: List<com.replayfy.android.MaskRect>) {
         try {
             val sw = (bmp.width * targetScale).toInt().coerceAtLeast(1)
             val sh = (bmp.height * targetScale).toInt().coerceAtLeast(1)
             val scaled = if (sw != bmp.width) Bitmap.createScaledBitmap(bmp, sw, sh, true) else bmp
 
-            // Mask sensitive rects with a solid box (rects were resolved on the
-            // main thread in `capture`, in unscaled decor-view coords).
+            // Mask sensitive rects per their style — OVERLAY paints a solid box,
+            // BLUR blurs the region (rects were resolved on the main thread in
+            // `capture`, in unscaled decor-view coords; scale them to `scaled`).
             if (rects.isNotEmpty()) {
                 val c = Canvas(scaled)
-                val p = Paint().apply { color = Color.DKGRAY }
-                for (r in rects) c.drawRect(Rect((r.left * targetScale).toInt(), (r.top * targetScale).toInt(), (r.right * targetScale).toInt(), (r.bottom * targetScale).toInt()), p)
+                val p = Paint().apply { color = Color.rgb(56, 56, 56) }
+                val downscale = com.replayfy.android.internal.privacy.PrivacyRegistry
+                    .blurDownscale.coerceAtLeast(2)
+                for (m in rects) {
+                    val r = m.rect
+                    val dst = Rect(
+                        (r.left * targetScale).toInt(), (r.top * targetScale).toInt(),
+                        (r.right * targetScale).toInt(), (r.bottom * targetScale).toInt())
+                    if (dst.width() <= 0 || dst.height() <= 0) continue
+                    when (m.style) {
+                        com.replayfy.android.ReplayMaskStyle.OVERLAY -> c.drawRect(dst, p)
+                        com.replayfy.android.ReplayMaskStyle.BLUR ->
+                            mosaicRegion(scaled, c, dst, downscale, smooth = true, fallback = p)
+                        com.replayfy.android.ReplayMaskStyle.PIXELATE ->
+                            mosaicRegion(scaled, c, dst, downscale, smooth = false, fallback = p)
+                    }
+                }
             }
 
             val out = ByteArrayOutputStream()

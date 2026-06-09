@@ -64,6 +64,15 @@ internal object PrivacyRegistry {
     @Volatile var occludeAllTextViews: Boolean = false
     @Volatile var occludeAllScreen: Boolean = false
 
+    // Default render style for masked regions that don't carry their own
+    // (addPrivacyView, occludeAll*, applyOcclusion, the whole-screen overlay).
+    // BLUR blurs the pixels; OVERLAY paints a solid box. Per-region styles
+    // (React Native / Flutter mask widgets) override this on their own rects.
+    @Volatile var maskStyle: com.replayfy.android.ReplayMaskStyle =
+        com.replayfy.android.ReplayMaskStyle.BLUR
+    /** Downscale factor for BLUR regions — smaller = stronger blur. */
+    @Volatile var blurDownscale: Int = 12
+
     // -----------------------------------------------------------------
     //  Per-class occlusion (the reference mobile SDK applyOcclusion / removeOcclusion)
     // -----------------------------------------------------------------
@@ -123,20 +132,19 @@ internal object PrivacyRegistry {
     // overwritten by the next setPendingFrameRects call).
 
     private val pendingRectsLock = Any()
-    private var pendingFrameRects: List<Rect> = emptyList()
+    private var pendingFrameRects: List<com.replayfy.android.MaskRect> = emptyList()
 
-    /** Bridge entry point — set the rects to paint on the next
-     *  snapshot. Replaces (does not append to) any prior pending set. */
-    fun setPendingFrameRects(rects: List<Rect>) {
+    /** Bridge entry point — set the rects (each with its own render style) to
+     *  paint on the next snapshot. Replaces any prior pending set. */
+    fun setPendingFrameRects(rects: List<com.replayfy.android.MaskRect>) {
         synchronized(pendingRectsLock) {
             pendingFrameRects = rects.toList() // defensive copy
         }
     }
 
     /** Snapshot + clear atomically so we never paint the same rect
-     *  twice (e.g. if two snapshots fire back-to-back). Called by
-     *  BitmapCapture once per capture. */
-    fun consumePendingFrameRects(): List<Rect> {
+     *  twice (e.g. if two snapshots fire back-to-back). */
+    fun consumePendingFrameRects(): List<com.replayfy.android.MaskRect> {
         return synchronized(pendingRectsLock) {
             val snapshot = pendingFrameRects
             pendingFrameRects = emptyList()
