@@ -215,6 +215,8 @@ object Replay {
      */
     @JvmStatic
     fun cancelSession() {
+        // ⚠️ STUB — LegacyCore isn't the live engine (init() boots ReplayCore);
+        // this does NOT cancel the live session. See docs/sdk-facade-status.md.
         LegacyCore.cancelCurrentSession()
     }
 
@@ -255,10 +257,13 @@ object Replay {
      */
     @JvmStatic
     fun optOutSchematicRecordings(optOut: Boolean) {
+        // ⚠️ STUB — sets an inert LegacyCore flag the live engine never reads;
+        // pixel capture is unaffected. See docs/sdk-facade-status.md.
         LegacyCore.setSchematicOptOut(optOut)
     }
 
     /** Whether schematic (snapshot) recording is currently opted out. */
+    // ⚠️ STUB — reads the inert LegacyCore flag (see optOutSchematicRecordings).
     @JvmStatic
     fun isOptedOutSchematicRecordings(): Boolean = LegacyCore.isSchematicOptedOut()
 
@@ -279,6 +284,9 @@ object Replay {
      *
      * Mirrors the reference mobile SDK's `urlForCurrentSession()`.
      */
+    // ⚠️ STUB — derived from the un-booted LegacyCore's (nonexistent) session,
+    // so returns nil for live sessions. Re-home onto ReplayCore.sessionId +
+    // apiHost. See docs/sdk-facade-status.md.
     @JvmStatic
     fun urlForCurrentSession(): String? = LegacyCore.urlForCurrentSession()
 
@@ -289,6 +297,8 @@ object Replay {
      *
      * Mirrors the reference mobile SDK's `urlForCurrentUser()`.
      */
+    // ⚠️ STUB — see urlForCurrentSession; nil for live sessions.
+    // docs/sdk-facade-status.md.
     @JvmStatic
     fun urlForCurrentUser(): String? = LegacyCore.urlForCurrentUser()
 
@@ -380,8 +390,35 @@ object Replay {
      */
     @JvmStatic
     fun occludeRectsOnNextFrame(rects: List<android.graphics.Rect>) {
-        com.replayfy.android.internal.privacy.PrivacyRegistry
-            .setPendingFrameRects(rects)
+        occludeRectsOnNextFrame(
+            rects, com.replayfy.android.internal.privacy.PrivacyRegistry.maskStyle)
+    }
+
+    /** As [occludeRectsOnNextFrame] but with an explicit render style for all
+     *  rects in this set. */
+    @JvmStatic
+    fun occludeRectsOnNextFrame(
+        rects: List<android.graphics.Rect>,
+        style: com.replayfy.android.ReplayMaskStyle,
+    ) {
+        com.replayfy.android.internal.privacy.PrivacyRegistry.setPendingFrameRects(
+            rects.map { com.replayfy.android.MaskRect(it, style) })
+    }
+
+    /** The default render style for masked regions — BLUR blurs the pixels,
+     *  OVERLAY paints a solid box. Applies to addPrivacyView, occludeAll*, the
+     *  whole-screen overlay, and any occludeRectsOnNextFrame call that doesn't
+     *  pass its own style. Default BLUR. */
+    @JvmStatic
+    fun setMaskStyle(style: com.replayfy.android.ReplayMaskStyle) {
+        com.replayfy.android.internal.privacy.PrivacyRegistry.maskStyle = style
+    }
+
+    /** Downscale factor for BLUR regions (default 12). Larger = stronger blur. */
+    @JvmStatic
+    fun setBlurDownscale(factor: Int) {
+        com.replayfy.android.internal.privacy.PrivacyRegistry.blurDownscale =
+            factor.coerceAtLeast(2)
     }
 
     /**
@@ -547,6 +584,8 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun allowShortBreakForAnotherApp(allow: Boolean, breakWindowMs: Long = 30_000L) {
+        // ⚠️ STUB — needs session-resume-window logic in the live engine; the
+        // LegacyCore flag is inert. See docs/sdk-facade-status.md.
         LegacyCore.setAllowShortBreak(allow, breakWindowMs)
     }
 
@@ -559,6 +598,8 @@ object Replay {
      */
     @JvmStatic
     fun setMultiSessionRecord(enabled: Boolean) {
+        // ⚠️ STUB — needs multi-session lifecycle in the live engine; the
+        // LegacyCore flag is inert. See docs/sdk-facade-status.md.
         LegacyCore.setMultiSessionRecord(enabled)
     }
 

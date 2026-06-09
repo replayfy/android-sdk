@@ -91,7 +91,7 @@ class ReplayCore private constructor() {
     @Volatile private var captureNetwork = true
 
     /** Sensitive decor-view-coordinate rects to mask in screenshots. */
-    var privacyRectsProvider: () -> List<Rect> = { emptyList() }
+    var privacyRectsProvider: () -> List<com.replayfy.android.MaskRect> = { emptyList() }
 
     /**
      * Additional host-supplied rects, composed into [privacyRectsProvider] by
@@ -101,7 +101,7 @@ class ReplayCore private constructor() {
      * (React Native / Flutter, which feed it decor-view-pixel rects pulled
      * from JS/Dart). Empty by default.
      */
-    var externalPrivacyRectsProvider: () -> List<Rect> = { emptyList() }
+    var externalPrivacyRectsProvider: () -> List<com.replayfy.android.MaskRect> = { emptyList() }
 
     fun start(app: Application, config: ReplayConfig) {
         // Idempotent: a second Replay.init (e.g. on an Activity recreate)
@@ -161,16 +161,21 @@ class ReplayCore private constructor() {
             // View-tree walk is safe.
             privacyRectsProvider = provider@{
                 val root = currentActivity?.window?.decorView ?: return@provider emptyList()
+                val style = PrivacyRegistry.maskStyle
                 if (PrivacyRegistry.occludeAllScreen) {
                     // Whole-screen occlude (occludeSensitiveScreen): one box over
                     // the whole decor view. Drain any pending bridge rects so they
                     // don't bleed into a later non-full-screen frame.
                     PrivacyRegistry.consumePendingFrameRects()
-                    return@provider listOf(Rect(0, 0, root.width, root.height))
+                    return@provider listOf(
+                        com.replayfy.android.MaskRect(Rect(0, 0, root.width, root.height), style))
                 }
-                PrivacyRegistry.sensitiveBounds(root) +
+                // Native/bulk sources render with the global style; the bridge
+                // rects (React Native / Flutter) carry their own per-region style.
+                (PrivacyRegistry.sensitiveBounds(root) +
                     PrivacyRegistry.bulkBounds(root) +
-                    PrivacyRegistry.composeBoundsRelativeTo(root) +
+                    PrivacyRegistry.composeBoundsRelativeTo(root))
+                    .map { com.replayfy.android.MaskRect(it, style) } +
                     PrivacyRegistry.consumePendingFrameRects() +
                     externalPrivacyRectsProvider()
             }
