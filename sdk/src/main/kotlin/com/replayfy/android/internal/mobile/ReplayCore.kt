@@ -93,6 +93,16 @@ class ReplayCore private constructor() {
     /** Sensitive decor-view-coordinate rects to mask in screenshots. */
     var privacyRectsProvider: () -> List<Rect> = { emptyList() }
 
+    /**
+     * Additional host-supplied rects, composed into [privacyRectsProvider] by
+     * [start]. Unlike [privacyRectsProvider] (which start assigns once the
+     * session opens), this is owned by the host and never overwritten — the
+     * integration point for hosts that compute occlusion off the View tree
+     * (React Native / Flutter, which feed it decor-view-pixel rects pulled
+     * from JS/Dart). Empty by default.
+     */
+    var externalPrivacyRectsProvider: () -> List<Rect> = { emptyList() }
+
     fun start(app: Application, config: ReplayConfig) {
         // Idempotent: a second Replay.init (e.g. on an Activity recreate)
         // must not wire a second collector / screenshot timer / perf
@@ -111,6 +121,12 @@ class ReplayCore private constructor() {
         application = app
         lastConfig = config
         app.registerActivityLifecycleCallbacks(activityCallbacks)
+        // registerActivityLifecycleCallbacks does NOT replay the resume that
+        // already happened. A host that calls init() after its Activity is
+        // already resumed (React Native / Flutter plugins boot from a method
+        // channel, post-onResume) would otherwise leave currentActivity null —
+        // and the screenshotter + tap tracker both gate on it. Seed it.
+        if (currentActivity == null) currentActivity = resolveResumedActivity()
         val transport = MobileTransport(host, projectKey)
         this.transport = transport
 
@@ -155,7 +171,8 @@ class ReplayCore private constructor() {
                 PrivacyRegistry.sensitiveBounds(root) +
                     PrivacyRegistry.bulkBounds(root) +
                     PrivacyRegistry.composeBoundsRelativeTo(root) +
-                    PrivacyRegistry.consumePendingFrameRects()
+                    PrivacyRegistry.consumePendingFrameRects() +
+                    externalPrivacyRectsProvider()
             }
 
             val collector = MobileCollector(transport)
@@ -310,6 +327,37 @@ class ReplayCore private constructor() {
     private fun now() = System.currentTimeMillis()
 
     // ── Activity tracking + lifecycle ────────────────────────────────
+    /**
+     * Best-effort lookup of the currently-resumed Activity via ActivityThread.
+     * `registerActivityLifecycleCallbacks` doesn't replay the resume that
+     * already happened, so a late init (host boots from a method channel after
+     * onResume, as the React Native / Flutter plugins do) needs this to seed
+     * [currentActivity]. The same reflection LeakCanary/Sentry use; tolerant of
+     * failure (returns null).
+     */
+    private fun resolveResumedActivity(): Activity? {
+        return try {
+            val atClass = Class.forName("android.app.ActivityThread")
+            val currentAt = atClass.getMethod("currentActivityThread").invoke(null)
+            val activitiesField =
+                atClass.getDeclaredField("mActivities").apply { isAccessible = true }
+            val activities = activitiesField.get(currentAt) as? Map<*, *> ?: return null
+            for (record in activities.values) {
+                record ?: continue
+                val rClass = record.javaClass
+                val paused = rClass.getDeclaredField("paused")
+                    .apply { isAccessible = true }.getBoolean(record)
+                if (!paused) {
+                    return rClass.getDeclaredField("activity")
+                        .apply { isAccessible = true }.get(record) as? Activity
+                }
+            }
+            null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private val activityCallbacks = object : Application.ActivityLifecycleCallbacks {
         override fun onActivityResumed(activity: Activity) {
             currentActivity = activity
