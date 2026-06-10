@@ -44,6 +44,15 @@ data class ReplayConfig(
     /** Capture uncaught exceptions via Thread.UncaughtExceptionHandler. */
     val captureErrors: Boolean = true,
 
+    /**
+     * Install the native view-tree touch capture. Default true. The Flutter
+     * plugin sets this false: a Flutter app is a single FlutterView, so the
+     * native tracker can only ever label taps "FlutterView" — the Dart layer
+     * captures taps with the real widget label and reports them via
+     * `reportInteraction`, so native capture would only double-count.
+     */
+    val captureTouch: Boolean = true,
+
     /** Include request/response headers in network capture. PII risk. */
     val captureHeaders: Boolean = false,
 

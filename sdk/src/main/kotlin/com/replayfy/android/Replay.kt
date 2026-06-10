@@ -93,6 +93,15 @@ object Replay {
     }
 
     /**
+     * Report a host-captured interaction (used by the Flutter plugin's
+     * Dart-side gesture capture, which knows the real widget label that the
+     * native FlutterView tracker cannot). `kind` ∈ "tap"/"long_press"/"swipe".
+     */
+    fun reportInteraction(kind: String, label: String, x: Int, y: Int, direction: String = "") {
+        ReplayCore.shared.reportInteraction(kind, label, x.toLong(), y.toLong(), direction)
+    }
+
+    /**
      * Manually end the current session and force-upload the in-memory
      * batch. The next foregrounding triggers a fresh session.
      *

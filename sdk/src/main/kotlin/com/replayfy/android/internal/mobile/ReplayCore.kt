@@ -201,7 +201,10 @@ class ReplayCore private constructor() {
             // captureSnapshotPixels=false → events only, no frames archive.
             if (config.captureSnapshotPixels) screenshots.start()
             perf.start()
-            currentActivity?.let { touch.attach(it) }
+            // Flutter hosts pass captureTouch=false — the Dart layer reports
+            // taps with the real widget label via reportInteraction (the native
+            // view tree only ever sees the one FlutterView).
+            if (config.captureTouch) currentActivity?.let { touch.attach(it) }
             // Uncaught-exception crash reporting.
             if (config.captureErrors) {
                 // JVM crashes — disk-backed so the record survives the dying
@@ -297,6 +300,15 @@ class ReplayCore private constructor() {
     fun removeVerificationListener(listener: Runnable) { verificationListeners.remove(listener) }
 
     // ── Message API (called by listeners) ────────────────────────────
+    /**
+     * Entry point for host-reported interactions (the Flutter plugin's
+     * Dart-side gesture capture). `kind` is "tap" / "long_press" / "swipe";
+     * a long-press records as a click (the dashboard keys gestures off the
+     * label + coordinates), and swipes carry their direction.
+     */
+    fun reportInteraction(kind: String, label: String, x: Long, y: Long, direction: String) {
+        if (kind == "swipe") sendSwipe(label, x, y, direction) else sendClick(label, x, y)
+    }
     fun sendClick(label: String, x: Long, y: Long) =
         enqueue(MobileWire.click(label, x, y, now()))
     fun sendSwipe(label: String, x: Long, y: Long, direction: String) =
