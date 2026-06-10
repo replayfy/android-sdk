@@ -31,6 +31,7 @@ enum class MobileMsgType(val id: Long) {
     NETWORK_CALL(105),
     SWIPE(106),
     BATCH_META(107),
+    GESTURE(108),
     GRAPH_QL(109),
 }
 
@@ -95,6 +96,11 @@ object MobileWire {
 
     fun swipe(label: String, x: Long, y: Long, direction: String, timestamp: Long): ByteArray =
         message(MobileMsgType.SWIPE, timestamp, body { writeString(label); writeUInt(x); writeUInt(y); writeString(direction) })
+
+    /** Advanced gesture (long_press / double_tap / pinch); `kind` carries the
+     *  variant, body otherwise mirrors swipe so the backend reuses the reader. */
+    fun gesture(kind: String, label: String, x: Long, y: Long, direction: String, timestamp: Long): ByteArray =
+        message(MobileMsgType.GESTURE, timestamp, body { writeString(kind); writeString(label); writeUInt(x); writeUInt(y); writeString(direction) })
 
     fun input(value: String, masked: Boolean, label: String, timestamp: Long): ByteArray =
         message(MobileMsgType.INPUT, timestamp, body { writeString(value); writeBool(masked); writeString(label) })

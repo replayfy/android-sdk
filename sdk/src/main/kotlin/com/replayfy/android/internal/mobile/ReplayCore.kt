@@ -307,7 +307,12 @@ class ReplayCore private constructor() {
      * label + coordinates), and swipes carry their direction.
      */
     fun reportInteraction(kind: String, label: String, x: Long, y: Long, direction: String) {
-        if (kind == "swipe") sendSwipe(label, x, y, direction) else sendClick(label, x, y)
+        when (kind) {
+            "swipe" -> sendSwipe(label, x, y, direction)
+            "tap" -> sendClick(label, x, y)
+            // long_press / double_tap / pinch → distinct gesture event.
+            else -> enqueue(MobileWire.gesture(kind, label, x, y, direction, now()))
+        }
     }
     fun sendClick(label: String, x: Long, y: Long) =
         enqueue(MobileWire.click(label, x, y, now()))
