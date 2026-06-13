@@ -13,10 +13,16 @@ import kotlin.math.hypot
  * swizzle approach.
  */
 class MobileTouchCapture(
-    private val onGesture: (label: String, x: Long, y: Long, isSwipe: Boolean, direction: String) -> Unit,
+    /** `kind` is "tap" / "long_press" / "swipe". */
+    private val onGesture: (label: String, x: Long, y: Long, kind: String, direction: String) -> Unit,
 ) {
     private var startX = 0f
     private var startY = 0f
+
+    private companion object {
+        /** Press held at least this long (with little movement) → long_press. */
+        const val LONG_PRESS_MS = 500L
+    }
 
     /** Install on an activity's window by wrapping its callback. */
     fun attach(activity: Activity) {
@@ -31,10 +37,15 @@ class MobileTouchCapture(
             MotionEvent.ACTION_DOWN -> { startX = ev.x; startY = ev.y }
             MotionEvent.ACTION_UP -> {
                 val dx = ev.x - startX; val dy = ev.y - startY
-                val isSwipe = hypot(dx, dy) > 10f
+                val held = ev.eventTime - ev.downTime
+                val kind = when {
+                    hypot(dx, dy) > 10f -> "swipe"
+                    held >= LONG_PRESS_MS -> "long_press"
+                    else -> "tap"
+                }
                 val x = ev.x.coerceAtLeast(0f).toLong()
                 val y = ev.y.coerceAtLeast(0f).toLong()
-                onGesture("View", x, y, isSwipe, direction(dx, dy))
+                onGesture("View", x, y, kind, direction(dx, dy))
             }
         }
     }

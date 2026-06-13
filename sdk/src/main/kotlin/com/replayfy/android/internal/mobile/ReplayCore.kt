@@ -186,8 +186,10 @@ class ReplayCore private constructor() {
                 activityProvider = { currentActivity },
                 privacyRects = { privacyRectsProvider() },
             ).apply { setSettings(resp.fps, resp.quality) }
-            val touch = MobileTouchCapture { label, x, y, isSwipe, direction ->
-                if (isSwipe) sendSwipe(label, x, y, direction) else sendClick(label, x, y)
+            val touch = MobileTouchCapture { label, x, y, kind, direction ->
+                // kind ∈ tap / swipe / long_press — routed to click / swipe /
+                // gesture by reportInteraction.
+                reportInteraction(kind, label, x, y, direction)
             }
 
             val perf = MobilePerfMonitor(app) { name, value -> sendPerformance(name, value) }
