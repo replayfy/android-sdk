@@ -3,6 +3,7 @@ package com.replayfy.android
 import android.app.Application
 import android.content.Context
 import android.view.View
+import android.widget.EditText
 import com.replayfy.android.internal.LegacyCore
 import com.replayfy.android.internal.mobile.ReplayCore
 import org.json.JSONObject
@@ -196,6 +197,30 @@ object Replay {
     @JvmStatic
     fun removePrivacyView(view: View) {
         com.replayfy.android.internal.privacy.PrivacyRegistry.remove(view)
+    }
+
+    /**
+     * Observe a text field so its value is recorded on the session timeline
+     * when editing ends (on focus-loss, not per keystroke). Password-type
+     * fields report a masked placeholder, never the typed text, and the
+     * field's hint is used as the label. Inputs are opt-in per field — never
+     * captured globally. The field's existing focus listener is preserved.
+     */
+    @JvmStatic
+    fun addObservedInput(editText: EditText) {
+        ReplayCore.shared.observeInput(editText)
+    }
+
+    /**
+     * Record a text input's value on the timeline. For hosts that manage their
+     * own text widgets (React Native / Flutter), where there's no native
+     * [EditText] to [addObservedInput]. Pass `masked = true` for sensitive
+     * fields — the value is dropped (recorded as "***") and never leaves the
+     * device.
+     */
+    @JvmStatic
+    fun trackInput(label: String, value: String, masked: Boolean) {
+        ReplayCore.shared.sendInput(if (masked) "***" else value, masked, label)
     }
 
     /**

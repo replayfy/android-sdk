@@ -42,6 +42,10 @@ class ReplayCore private constructor() {
     private var collector: MobileCollector? = null
     private var screenshots: MobileScreenshots? = null
     private var touch: MobileTouchCapture? = null
+    // Opt-in text-input observation (Replay.addObservedInput) — reports an
+    // observed field's value on editing-end. Always live (not tied to a single
+    // start); sendInput's enqueue gates on recording state.
+    private val input = MobileInputCapture { value, masked, label -> sendInput(value, masked, label) }
     private var perf: MobilePerfMonitor? = null
     private var consoleCapture: ConsoleCapture? = null
     // Retained from the first start() so startNewSession() can restart cleanly.
@@ -336,6 +340,9 @@ class ReplayCore private constructor() {
         enqueue(MobileWire.swipe(label, x, y, direction, now()))
     fun sendInput(value: String, masked: Boolean, label: String) =
         enqueue(MobileWire.input(value, masked, label, now()))
+
+    /** Opt an [android.widget.EditText] into input recording (reports on editing-end). */
+    fun observeInput(editText: android.widget.EditText) = input.observe(editText)
     fun sendPerformance(name: String, value: Long) =
         enqueue(MobileWire.performance(name, value, now()))
     fun sendLog(severity: String, content: String) {
