@@ -91,6 +91,37 @@ Replay.occludeRectsOnNextFrame(rects)             // one-shot rect mask (RN/Flut
 
 Password fields are masked automatically.
 
+## Text input tracking
+
+Record what a user types in a field — opt in per field. It reports on
+focus-loss (not per keystroke); password-type fields send `"***"`, never
+the text, and the field's hint is used as the label (the field's existing
+focus listener is preserved):
+
+```kotlin
+Replay.addObservedInput(emailEditText)
+Replay.addObservedInput(passwordEditText)   // password inputType → "***"
+```
+
+For a value not backed by an `EditText` (Compose, custom), report it:
+
+```kotlin
+Replay.trackInput(label = "Coupon", value = code, masked = false)
+```
+
+## Screen tracking
+
+Activities are tracked automatically — and so are **Fragments**: the SDK
+registers Fragment lifecycle callbacks, so single-Activity / Jetpack
+Navigation apps report a screen per destination with no wiring. For
+Compose screens or custom views the Activity/Fragment hooks can't see,
+mark them manually:
+
+```kotlin
+Replay.addObservedView(checkoutComposeView, "Checkout")  // emits on attach + detach
+Replay.tagScreenName("Checkout")                         // or set it directly (e.g. in a Compose LaunchedEffect)
+```
+
 ## Network capture
 
 Capture is opt-in (`captureNetwork = true`) and wired by adding the
@@ -112,6 +143,9 @@ val client = OkHttpClient.Builder()
 | `identify(distinctId, properties?)` | Attach a known user (`email` / `name` / `plan` are promoted) |
 | `track(name, properties?)` | Custom timeline / funnel event |
 | `tagScreenName(name)` | Manually set the current screen name |
+| `addObservedView(view, screenName, viewName?)` | Mark a Compose/custom view as a screen (emits on attach/detach) |
+| `addObservedInput(editText)` | Record a field's value on focus-loss (password → `"***"`) |
+| `trackInput(label, value, masked)` | Record an input value explicitly (masked → `"***"`) |
 | `log(level, message, stack?)` | Bridge a custom logger into the console tab |
 | `addPrivacyView` / `removePrivacyView` | Per-view masking |
 | `occludeAllTextFields` / `occludeAllTextView` | Bulk input / label masking |
@@ -121,7 +155,8 @@ val client = OkHttpClient.Builder()
 | `networkInterceptor()` | OkHttp interceptor for network capture |
 
 The engine additionally captures automatically: periodic screenshots,
-taps & gestures, screen navigation, performance vitals (cold start,
+taps & gestures, screen navigation (Activities + Fragments), device info
+(model, RAM, OS, timezone, network type), performance vitals (cold start,
 frame drops, ANR, memory, thermal), and crashes.
 
 ### Coming soon — currently no-ops
