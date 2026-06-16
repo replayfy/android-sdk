@@ -583,6 +583,11 @@ internal object LegacyCore {
         android.util.Log.i(TAG, "applyRemoteConfig: capture.network=${cfg.captureNetwork} capture.console=${cfg.captureConsole} sampling=${cfg.samplingRate}")
         remoteConfig = cfg
 
+        // Route the same periodic config into the live mobile engine so
+        // dashboard flag changes apply mid-session there too, not just at
+        // /start (the toggles ReplayCore reads at capture time).
+        com.replayfy.android.internal.mobile.ReplayCore.shared.applyRemoteConfig(cfg)
+
         // Console capture — start/stop dynamically. The collector
         // installs System.out/err interception, idempotent.
         val ctx = appContext

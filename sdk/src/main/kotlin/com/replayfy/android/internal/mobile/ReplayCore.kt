@@ -90,11 +90,26 @@ class ReplayCore private constructor() {
     @Volatile var startedAt: Long = 0
         private set
 
-    // Dashboard-controlled capture toggles, set from the /start response.
+    // Dashboard-controlled capture toggles, set from the /start response and
+    // refreshed mid-session by applyRemoteConfig (see below).
     @Volatile private var captureConsole = true
     @Volatile private var captureNetwork = true
     @Volatile private var captureNetworkHeaders = true
     @Volatile private var captureNetworkBodies = true
+
+    /**
+     * Re-apply dashboard config mid-session. The periodic RemoteConfigFetcher
+     * (owned by LegacyCore) pushes here on every refresh, so flipping a capture
+     * toggle on the dashboard takes effect on the live mobile session without
+     * an app restart — not just at /start. Toggles are @Volatile, so capture
+     * threads see the new value immediately.
+     */
+    internal fun applyRemoteConfig(cfg: com.replayfy.android.internal.RemoteConfig) {
+        captureConsole = cfg.captureConsole
+        captureNetwork = cfg.captureNetwork
+        captureNetworkHeaders = cfg.captureNetworkHeaders
+        captureNetworkBodies = cfg.captureNetworkBodies
+    }
 
     /** Sensitive decor-view-coordinate rects to mask in screenshots. */
     var privacyRectsProvider: () -> List<com.replayfy.android.MaskRect> = { emptyList() }
