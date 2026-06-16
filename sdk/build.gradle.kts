@@ -230,6 +230,10 @@ dependencies {
 
     // @Nullable / @NonNull annotations for the public Java-facing API.
     compileOnly(libs.androidx.annotation)
+    // Auto screen-tracking for Fragment / Navigation / single-Activity apps.
+    // compileOnly: apps that use Fragments already ship this; apps that don't
+    // never load the class (the tracker guards every use), so we don't force it.
+    compileOnly("androidx.fragment:fragment:1.6.2")
 
     // Instrumented tests (development only — stripped from the published
     // AAR). Drive the privacy-masking on-device verification.

@@ -224,6 +224,18 @@ object Replay {
     }
 
     /**
+     * Mark a view as a screen — emits a screen event when it attaches/detaches
+     * from the window. Activities and androidx Fragments are auto-tracked, so
+     * this is only for Compose screens / custom views those hooks can't see
+     * (e.g. wrap your screen's root `ComposeView`, or call from a Compose
+     * `LaunchedEffect` via [tagScreenName]).
+     */
+    @JvmStatic
+    fun addObservedView(view: View, screenName: String, viewName: String = screenName) {
+        ReplayCore.shared.observeView(view, screenName, viewName)
+    }
+
+    /**
      * Pause schematic capture — snapshots stop, taps + network +
      * console + perf events keep flowing. Useful for screens with
      * regulated pixel content (HIPAA, banking PIN pad) where the

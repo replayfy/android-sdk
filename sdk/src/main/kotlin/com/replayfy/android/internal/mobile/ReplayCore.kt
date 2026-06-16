@@ -133,6 +133,9 @@ class ReplayCore private constructor() {
         // channel, post-onResume) would otherwise leave currentActivity null —
         // and the screenshotter + tap tracker both gate on it. Seed it.
         if (currentActivity == null) currentActivity = resolveResumedActivity()
+        // Activities created before init() never replay onActivityCreated, so
+        // seed Fragment tracking for the one already on screen.
+        currentActivity?.let { registerFragmentTracking(it) }
         val transport = MobileTransport(host, projectKey)
         this.transport = transport
 
@@ -449,10 +452,65 @@ class ReplayCore private constructor() {
             }
         }
         override fun onActivityStarted(activity: Activity) {}
-        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+            registerFragmentTracking(activity)
+        }
         override fun onActivityStopped(activity: Activity) {}
         override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
         override fun onActivityDestroyed(activity: Activity) {}
+    }
+
+    // ── Fragment screen tracking (androidx.fragment — compileOnly) ────
+    // Auto-emit a screen (viewComponent) per Fragment resume/pause so
+    // single-Activity / Navigation / Compose-host apps report real screens,
+    // not just the one Activity. Guarded everywhere so a host without
+    // androidx.fragment never crashes (the class simply won't load).
+    private val trackedFragmentManagers =
+        java.util.Collections.synchronizedSet(
+            java.util.Collections.newSetFromMap(java.util.WeakHashMap<Any, Boolean>()),
+        )
+
+    private val fragmentCallbacks by lazy {
+        object : androidx.fragment.app.FragmentManager.FragmentLifecycleCallbacks() {
+            override fun onFragmentResumed(
+                fm: androidx.fragment.app.FragmentManager,
+                f: androidx.fragment.app.Fragment,
+            ) {
+                if (autoScreenName) { val n = f.javaClass.simpleName; sendScreen(n, n, true) }
+            }
+
+            override fun onFragmentPaused(
+                fm: androidx.fragment.app.FragmentManager,
+                f: androidx.fragment.app.Fragment,
+            ) {
+                if (autoScreenName) { val n = f.javaClass.simpleName; sendScreen(n, n, false) }
+            }
+        }
+    }
+
+    private fun registerFragmentTracking(activity: Activity) {
+        try {
+            if (activity !is androidx.fragment.app.FragmentActivity) return
+            val fm = activity.supportFragmentManager
+            if (!trackedFragmentManagers.add(fm)) return // already tracking this FragmentManager
+            fm.registerFragmentLifecycleCallbacks(fragmentCallbacks, true)
+        } catch (_: Throwable) {
+            // androidx.fragment not on the host's classpath, or registration
+            // failed — screen tracking just falls back to Activities.
+        }
+    }
+
+    /**
+     * Manually mark a view as a screen — emits a screen (viewComponent) when it
+     * attaches to the window and again (hidden) on detach. For Compose screens
+     * / custom views the Activity + Fragment hooks can't see.
+     */
+    fun observeView(view: android.view.View, screenName: String, viewName: String) {
+        view.addOnAttachStateChangeListener(object : android.view.View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: android.view.View) { sendScreen(screenName, viewName, true) }
+            override fun onViewDetachedFromWindow(v: android.view.View) { sendScreen(screenName, viewName, false) }
+        })
+        if (view.isAttachedToWindow) sendScreen(screenName, viewName, true)
     }
 
     // ── /start device params ─────────────────────────────────────────
