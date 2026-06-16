@@ -479,6 +479,7 @@ class ReplayCore private constructor() {
             put("deviceMemory", deviceMemoryKb(app))
             put("timestamp", now())
             put("timezone", timezone())
+            put("connectionType", connectionType(app))
             put("width", dm.widthPixels)
             put("height", dm.heightPixels)
             // If identify() ran before start, send the id so the sampling gate
@@ -495,6 +496,29 @@ class ReplayCore private constructor() {
             am.getMemoryInfo(mi)
             mi.totalMem / 1024
         } catch (e: Exception) { 0L }
+    }
+
+    /**
+     * Transport the device is on at session start — "wifi" / "cellular" /
+     * "ethernet" / "none". Mirrors the reference's ConnectivityManager probe.
+     * Wrapped so a missing ACCESS_NETWORK_STATE (or any failure) yields
+     * "unknown" rather than breaking start.
+     */
+    private fun connectionType(app: Application): String {
+        return try {
+            val cm = app.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+                as? android.net.ConnectivityManager ?: return "unknown"
+            val net = cm.activeNetwork ?: return "none"
+            val caps = cm.getNetworkCapabilities(net) ?: return "none"
+            when {
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+                else -> "unknown"
+            }
+        } catch (e: Exception) {
+            "unknown"
+        }
     }
 
     private fun timezone(): String {
