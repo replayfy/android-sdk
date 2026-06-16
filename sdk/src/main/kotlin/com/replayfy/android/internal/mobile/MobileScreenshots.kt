@@ -63,6 +63,21 @@ class MobileScreenshots(
         main.post(tick)
     }
 
+    /** Feed an externally-captured frame (Flutter's Dart-side RepaintBoundary
+     *  capture, since native PixelCopy can't read Flutter's SurfaceView) into
+     *  the same encode → accumulate → upload pipeline. Decodes + re-encodes on
+     *  the sender thread so it never touches the main thread. [rects] are the
+     *  occlusion regions (developer `ReplayMask` bounds, in the PNG's pixel
+     *  coords) the encoder masks — Flutter has no native view tree to mask. */
+    fun submitFrame(png: ByteArray, rects: List<com.replayfy.android.MaskRect>) {
+        sender.execute {
+            val bmp = try {
+                android.graphics.BitmapFactory.decodeByteArray(png, 0, png.size)
+            } catch (e: Throwable) { null } ?: return@execute
+            encode(bmp, rects)
+        }
+    }
+
     fun stop() {
         running = false
         main.removeCallbacks(tick)

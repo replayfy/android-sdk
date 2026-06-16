@@ -102,6 +102,18 @@ object Replay {
     }
 
     /**
+     * Ingest a Flutter frame captured Dart-side (via a root RepaintBoundary).
+     * Native PixelCopy can't read Flutter's SurfaceView on Android, so the
+     * Flutter plugin disables native capture and ships frames here instead.
+     * [rects] are the occlusion regions (developer `ReplayMask` bounds in the
+     * PNG's pixel coords) the encoder masks. [ts] is the capture epoch-ms
+     * (reserved; the archive timestamps on receipt).
+     */
+    fun reportFrame(png: ByteArray, ts: Long, rects: List<MaskRect> = emptyList()) {
+        ReplayCore.shared.submitFrame(png, rects)
+    }
+
+    /**
      * Manually end the current session and force-upload the in-memory
      * batch. The next foregrounding triggers a fresh session.
      *

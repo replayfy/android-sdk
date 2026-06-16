@@ -56,6 +56,13 @@ data class ReplayConfig(
     /** Include request/response headers in network capture. PII risk. */
     val captureHeaders: Boolean = false,
 
+    /**
+     * Include request/response bodies in network capture (capped at the
+     * engine's body limit). PII risk. The dashboard's `captureNetworkBodies`
+     * overrides this when the server specifies it.
+     */
+    val captureBodies: Boolean = true,
+
     /** Max captured body size per network event. Bodies above are truncated. */
     val maxBodyBytes: Int = 4_096,
 

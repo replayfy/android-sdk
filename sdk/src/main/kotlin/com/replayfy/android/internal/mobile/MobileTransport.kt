@@ -18,6 +18,9 @@ data class MobileStartResponse(
     // specify, so the SDK's ReplayConfig default applies.
     val captureConsole: Boolean? = null,
     val captureNetwork: Boolean? = null,
+    // Granular network toggles — strip headers/bodies on-device when disabled.
+    val captureNetworkHeaders: Boolean? = null,
+    val captureNetworkBodies: Boolean? = null,
     // false ⇒ the server's sampling gate dropped this session; the SDK
     // must not record. Distinct from a null response (network failure).
     val record: Boolean = true,
@@ -55,6 +58,8 @@ class MobileTransport(host: String, private val projectKey: String) {
                 userUUID = data.optString("userUUID", ""),
                 captureConsole = if (data.has("captureConsole")) data.getBoolean("captureConsole") else null,
                 captureNetwork = if (data.has("captureNetwork")) data.getBoolean("captureNetwork") else null,
+                captureNetworkHeaders = if (data.has("captureNetworkHeaders")) data.getBoolean("captureNetworkHeaders") else null,
+                captureNetworkBodies = if (data.has("captureNetworkBodies")) data.getBoolean("captureNetworkBodies") else null,
                 // false ⇒ server sampling gate dropped this launch.
                 record = data.optBoolean("record", true),
             )

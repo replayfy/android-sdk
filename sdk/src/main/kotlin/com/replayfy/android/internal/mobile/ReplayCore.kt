@@ -89,6 +89,8 @@ class ReplayCore private constructor() {
     // Dashboard-controlled capture toggles, set from the /start response.
     @Volatile private var captureConsole = true
     @Volatile private var captureNetwork = true
+    @Volatile private var captureNetworkHeaders = true
+    @Volatile private var captureNetworkBodies = true
 
     /** Sensitive decor-view-coordinate rects to mask in screenshots. */
     var privacyRectsProvider: () -> List<com.replayfy.android.MaskRect> = { emptyList() }
@@ -144,6 +146,11 @@ class ReplayCore private constructor() {
             // response) overrides it when the server specifies a value.
             captureConsole = resp.captureConsole ?: config.captureConsole
             captureNetwork = resp.captureNetwork ?: config.captureNetwork
+            // API value wins when present; otherwise fall back to local config
+            // (so clients can remote-configure from the dashboard, but local
+            // config still applies when the server is silent).
+            captureNetworkHeaders = resp.captureNetworkHeaders ?: config.captureHeaders
+            captureNetworkBodies = resp.captureNetworkBodies ?: config.captureBodies
 
             // Open the live-presence socket now that we have a session id. Uses
             // the distinct id known so far (identify() called before /start
@@ -285,6 +292,13 @@ class ReplayCore private constructor() {
     /** Resume periodic screenshot capture. */
     fun resumeCapture() { screenshots?.resume() }
 
+    /** Ingest a Flutter Dart-side frame (PNG bytes) into the frames archive.
+     *  Used when native capture is disabled for Flutter (Android's PixelCopy
+     *  can't read the SurfaceView). */
+    fun submitFrame(png: ByteArray, rects: List<com.replayfy.android.MaskRect>) {
+        screenshots?.submitFrame(png, rects)
+    }
+
     /** Toggle auto screen-name tagging (Activity lifecycle) at runtime. */
     fun setAutoScreenName(enabled: Boolean) { autoScreenName = enabled }
 
@@ -328,7 +342,24 @@ class ReplayCore private constructor() {
         if (captureConsole) enqueue(MobileWire.log(severity, content, now()))
     }
     fun sendNetwork(type: String, method: String, url: String, request: String, response: String, status: Long, duration: Long) {
-        if (captureNetwork) enqueue(MobileWire.networkCall(type, method, url, request, response, status, duration, now()))
+        if (!captureNetwork) return
+        // Single chokepoint for native + RN traffic — honour the granular
+        // workspace toggles so disabled headers/bodies never leave the device.
+        enqueue(MobileWire.networkCall(type, method, url, filterNetSide(request), filterNetSide(response), status, duration, now()))
+    }
+
+    /** Strip `headers`/`body` from a `{headers, body}` JSON side per the
+     *  workspace toggles. No-op (returns the original) when both are enabled. */
+    private fun filterNetSide(json: String): String {
+        if (captureNetworkHeaders && captureNetworkBodies) return json
+        return try {
+            val obj = org.json.JSONObject(json)
+            if (!captureNetworkHeaders) obj.put("headers", org.json.JSONObject())
+            if (!captureNetworkBodies) obj.put("body", org.json.JSONObject.NULL)
+            obj.toString()
+        } catch (_: Throwable) {
+            json
+        }
     }
     fun sendCrash(name: String, reason: String, stacktrace: String) {
         enqueue(MobileWire.crash(name, reason, stacktrace, now()))
@@ -338,8 +369,13 @@ class ReplayCore private constructor() {
     }
     fun sendScreen(screenName: String, viewName: String, visible: Boolean) =
         enqueue(MobileWire.viewComponent(screenName, viewName, visible, now()))
-    fun sendEvent(name: String, payload: String) =
+    fun sendEvent(name: String, payload: String) {
+        // RN/Flutter forward console logs as the reserved `$console` event, so
+        // honour the API's captureConsole toggle here too (sendLog already does
+        // for native logs). Custom events and `$exception` still flow.
+        if (name == "\$console" && !captureConsole) return
         enqueue(MobileWire.event(name, payload, now()))
+    }
     fun setUserId(id: String) {
         distinctId = id
         presence?.updateDistinctId(id)
@@ -431,6 +467,9 @@ class ReplayCore private constructor() {
             put("userOSVersion", Build.VERSION.RELEASE ?: "")
             put("userDevice", "${Build.MANUFACTURER} ${Build.MODEL}")
             put("userDeviceType", Build.MODEL ?: "")
+            // Total device RAM in KB (mirrors iOS physicalMemory/1024) so the
+            // dashboard's device panel shows memory for Android sessions too.
+            put("deviceMemory", deviceMemoryKb(app))
             put("timestamp", now())
             put("timezone", timezone())
             put("width", dm.widthPixels)
@@ -439,6 +478,16 @@ class ReplayCore private constructor() {
             // can honour alwaysRecordIdentified.
             distinctId?.let { put("distinctId", it) }
         }
+    }
+
+    private fun deviceMemoryKb(app: Application): Long {
+        return try {
+            val am = app.getSystemService(android.content.Context.ACTIVITY_SERVICE)
+                as android.app.ActivityManager
+            val mi = android.app.ActivityManager.MemoryInfo()
+            am.getMemoryInfo(mi)
+            mi.totalMem / 1024
+        } catch (e: Exception) { 0L }
     }
 
     private fun timezone(): String {
