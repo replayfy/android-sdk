@@ -534,6 +534,9 @@ class ReplayCore private constructor() {
         val dm: DisplayMetrics = app.resources.displayMetrics
         val pkg = try { app.packageManager.getPackageInfo(app.packageName, 0) } catch (e: Exception) { null }
         val revID = pkg?.versionCode?.toString() ?: "N/A"
+        // Marketing version (e.g. "1.4.2") — the human release identifier
+        // Release Intelligence prefers, over the build number in revID.
+        val appVersion = pkg?.versionName ?: ""
         val uuid = try {
             Settings.Secure.getString(app.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown"
         } catch (e: Exception) { "unknown" }
@@ -543,6 +546,7 @@ class ReplayCore private constructor() {
             put("trackerVersion", "2.0.0")
             framework?.takeIf { it.isNotEmpty() }?.let { put("framework", it) }
             put("revID", revID)
+            put("appVersion", appVersion)
             put("userUUID", uuid)
             put("userOSVersion", Build.VERSION.RELEASE ?: "")
             put("userDevice", "${Build.MANUFACTURER} ${Build.MODEL}")
