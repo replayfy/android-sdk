@@ -552,6 +552,15 @@ class ReplayCore private constructor() {
             put("deviceMemory", deviceMemoryKb(app))
             put("timestamp", now())
             put("timezone", timezone())
+            // IANA id ("Africa/Lagos") alongside the offset above — the server
+            // maps it to a country when region/locale don't resolve one.
+            put("timezoneId", java.util.TimeZone.getDefault().id)
+            // The device's own region + locale. The server fills the session
+            // country from these when IP geo can't resolve it (carrier NAT /
+            // VPN, emulator) — mobile IP geo is unreliable, this isn't.
+            java.util.Locale.getDefault().country
+                .takeIf { it.isNotEmpty() }?.let { put("regionCode", it) }
+            put("language", java.util.Locale.getDefault().toLanguageTag())
             put("connectionType", connectionType(app))
             put("width", dm.widthPixels)
             put("height", dm.heightPixels)
