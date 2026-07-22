@@ -65,7 +65,6 @@ cold-start fallbacks — after the first fetch, dashboard settings win
 | `distinctId` | `String?` | `null` | Known user id at init; else an install-stable anonymous id |
 | `flushIntervalMs` | `Long` | `5000` | Auto-flush cadence for the in-memory batch |
 | `maxBufferSize` | `Int` | `500` | Events buffered before a flush is forced |
-| `liveMode` | `Boolean` | `true` | Live-presence socket (shows the session "online" on the dashboard) |
 | `captureConsole` | `Boolean` | `true` | Capture `Log.x` / stdout / stderr |
 | `captureNetwork` | `Boolean` | `false` | Capture HTTP requests (off by default — PII risk) |
 | `captureErrors` | `Boolean` | `true` | Capture uncaught exceptions / crashes |
