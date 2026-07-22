@@ -32,9 +32,6 @@ data class ReplayConfig(
     /** Cap on events buffered in-memory before a flush is forced. */
     val maxBufferSize: Int = 500,
 
-    /** When false, presence/live-mode WebSocket is skipped. */
-    val liveMode: Boolean = true,
-
     /** Capture LogCat / `Log.x` output at runtime. */
     val captureConsole: Boolean = true,
 

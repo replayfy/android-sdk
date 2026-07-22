@@ -53,11 +53,6 @@ class ReplayCore private constructor() {
     @Volatile private var lastConfig: ReplayConfig? = null
     private val verificationListeners =
         java.util.concurrent.CopyOnWriteArrayList<Runnable>()
-    // Live-presence socket (mirrors the web SDK's presence.ts): keeps this
-    // session on the dashboard's online list for its lifetime; the backend
-    // LiveGateway flips the EndUser online on connect / offline 10s after
-    // disconnect. Best-effort — never blocks capture.
-    private var presence: MobilePresence? = null
     private val startExecutor = Executors.newSingleThreadExecutor()
 
     /**
@@ -79,12 +74,10 @@ class ReplayCore private constructor() {
 
     @Volatile private var currentActivity: Activity? = null
     @Volatile var sessionId: String? = null
-    // Project key + ingest host, kept so the presence socket can authenticate
-    // with the same credentials as the HTTP transport.
+    // Project key + ingest host for the HTTP transport.
     @Volatile private var projectKey: String? = null
     @Volatile private var host: String? = null
-    // Last identified distinct id (from identify → setUserId). Passed to the
-    // presence socket so the dashboard attaches this session to the right user.
+    // Last identified distinct id (from identify → setUserId), sent on the wire.
     @Volatile private var distinctId: String? = null
         private set
     @Volatile var startedAt: Long = 0
@@ -173,13 +166,6 @@ class ReplayCore private constructor() {
             // config still applies when the server is silent).
             captureNetworkHeaders = resp.captureNetworkHeaders ?: config.captureHeaders
             captureNetworkBodies = resp.captureNetworkBodies ?: config.captureBodies
-
-            // Open the live-presence socket now that we have a session id. Uses
-            // the distinct id known so far (identify() called before /start
-            // completed sets it); identify() afterwards calls updateDistinctId.
-            presence = MobilePresence().also {
-                it.start(host, projectKey, resp.sessionID, distinctId)
-            }
 
             // Wire screenshot privacy masking to the PrivacyRegistry — the
             // same collectors the legacy capture path consults. Without this
@@ -303,7 +289,6 @@ class ReplayCore private constructor() {
         perf?.stop(); perf = null
         consoleCapture?.stop(); consoleCapture = null
         collector?.stop(); collector = null
-        presence?.stop(); presence = null
         sessionId = null
     }
 
@@ -403,7 +388,6 @@ class ReplayCore private constructor() {
     }
     fun setUserId(id: String) {
         distinctId = id
-        presence?.updateDistinctId(id)
         enqueue(MobileWire.userId(id, now()))
     }
     fun sendMetadata(key: String, value: String) =

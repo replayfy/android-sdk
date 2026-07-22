@@ -220,14 +220,6 @@ dependencies {
     // the worker.
     implementation(libs.androidx.work.runtime)
 
-    // Socket.IO client — backs the live-presence channel (MobilePresence),
-    // the mobile counterpart of the web SDK's socket. `org.json` is provided
-    // by the Android platform, so we exclude the bundled copy to avoid a
-    // duplicate-class clash at packaging time.
-    implementation("io.socket:socket.io-client:2.1.0") {
-        exclude(group = "org.json", module = "json")
-    }
-
     // @Nullable / @NonNull annotations for the public Java-facing API.
     compileOnly(libs.androidx.annotation)
     // Auto screen-tracking for Fragment / Navigation / single-Activity apps.
