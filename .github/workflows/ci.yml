@@ -1,0 +1,24 @@
+name: CI
+
+# Android has NO "deploy" step: JitPack builds the library ON DEMAND from your
+# git tag the first time a consumer requests it, so releasing = pushing a tag.
+# This workflow is the build GATE that protects that tag — it assembles the AAR
+# on every PR/push so JitPack won't be handed a tag that doesn't compile.
+# (Moving to Maven Central later WOULD add a real publish step with GPG signing.)
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest # GitHub's ubuntu runners ship the Android SDK + ANDROID_HOME
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17" # JitPack builds on JDK 17 — match it here
+      - name: Assemble release AAR
+        run: ./gradlew :sdk:assembleRelease --no-daemon --stacktrace
