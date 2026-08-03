@@ -1,6 +1,6 @@
 package com.replayfy.symbols
 
-import com.android.build.api.variant.AndroidComponentsExtension
+import com.android.build.api.variant.ApplicationAndroidComponentsExtension
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 
@@ -79,14 +79,17 @@ class ReplaySymbolsPlugin : Plugin<Project> {
         // `androidComponents` callback is fragile; afterEvaluate
         // is the boring + reliable hook.
         project.afterEvaluate { proj ->
+            // Application-typed extension so onVariants yields ApplicationVariant
+            // (which exposes applicationId — the base Variant / library variant
+            // does not). The plugin uploads per-app symbols, so it targets the
+            // application module.
             val components = proj.extensions.findByType(
-                AndroidComponentsExtension::class.java,
+                ApplicationAndroidComponentsExtension::class.java,
             )
             if (components == null) {
                 proj.logger.warn(
-                    "[replaySymbols] Android Gradle Plugin not applied — " +
-                        "skipping. Apply com.android.application or " +
-                        "com.android.library before com.replayfy.symbols.",
+                    "[replaySymbols] no Android application module — skipping. " +
+                        "Apply com.android.application before com.replayfy.symbols.",
                 )
                 return@afterEvaluate
             }

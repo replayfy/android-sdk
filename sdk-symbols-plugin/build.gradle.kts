@@ -19,8 +19,12 @@
 // /v1/replay/symbols/<platform>/<version>/<build>/<filename>.
 
 plugins {
-    `kotlin-dsl`
+    // This module is a normal Plugin<Project> class, NOT precompiled script
+    // plugins — so it uses the Kotlin JVM plugin. The `kotlin-dsl` plugin's
+    // precompiled-script-plugin machinery fails to configure here on this
+    // Gradle/Kotlin combo (NoSuchMethodError registerKotlinJvmCompileTask).
     `java-gradle-plugin`
+    alias(libs.plugins.kotlin.jvm)
     `maven-publish`
     signing
 }
@@ -83,8 +87,8 @@ publishing {
                     url.set("https://replayfy.io")
                     licenses {
                         license {
-                            name.set("MIT")
-                            url.set("https://opensource.org/licenses/MIT")
+                            name.set("BSD-3-Clause")
+                            url.set("https://opensource.org/licenses/BSD-3-Clause")
                             distribution.set("repo")
                         }
                     }

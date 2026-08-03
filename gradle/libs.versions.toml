@@ -38,3 +38,6 @@ android-library = { id = "com.android.library", version.ref = "agp" }
 # emulator for smoke-testing the SDK end-to-end.
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+# Used by :sdk-symbols-plugin — a plain JVM Gradle plugin (not a precompiled
+# script plugin, so it uses kotlin.jvm rather than the `kotlin-dsl` plugin).
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
