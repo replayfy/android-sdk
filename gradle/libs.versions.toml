@@ -10,7 +10,7 @@ androidx-annotation = "1.8.0"
 
 # Compose — BoM aligns all compose-* artifacts to one tested set.
 # Pulls in compose-ui 1.6.x + runtime 1.6.x as of this BoM date.
-compose-bom = "2024.06.00"
+compose-bom = "2026.06.01"
 # Compose compiler — must match Kotlin 1.9.25 per the compatibility
 # matrix at https://developer.android.com/jetpack/androidx/releases/compose-kotlin
 compose-compiler = "1.5.15"
