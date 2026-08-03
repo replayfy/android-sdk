@@ -106,39 +106,37 @@ android {
 }
 
 // -----------------------------------------------------------------------
-// Maven Central publication
+// Publication
 // -----------------------------------------------------------------------
-// To publish a release:
-//   1. Set OSSRH credentials in ~/.gradle/gradle.properties:
-//        ossrhUsername=<sonatype username>
-//        ossrhPassword=<sonatype token>
-//        signing.keyId=<8-char hex>
-//        signing.password=<gpg passphrase>
-//        signing.secretKeyRingFile=/Users/you/.gnupg/secring.gpg
-//   2. ./gradlew :sdk:publishReleasePublicationToOSSRHRepository
-//   3. Log into https://s01.oss.sonatype.org → close + release the
-//      staging repo. (CI can automate this via the nexus-publish
-//      plugin in a follow-up.)
+// Primary release path is JitPack (solo-friendly, no Sonatype account):
+// push a git tag and JitPack builds the artifact on demand. Consumers add
+// the JitPack repo + `com.github.replayfy:android-sdk:<tag>`.
+// JitPack overrides the `version` below with the tag it builds.
 //
-// Coordinates: com.replayfy:android-sdk:0.0.1
+// The OSSRH repository + signing blocks below stay wired so a future Maven
+// Central move needs only credentials + a groupId flip (see io.replayfy note).
+//
+// Coordinates (JitPack): com.github.replayfy:android-sdk:0.0.1
 afterEvaluate {
     publishing {
         publications {
             create<MavenPublication>("release") {
                 from(components["release"])
-                groupId    = "com.replayfy"
+                // JitPack coordinates. `com.github.<org>:<repo>` is what the
+                // JitPack maven repo resolves for github.com/replayfy/android-sdk.
+                groupId    = "com.github.replayfy"
                 artifactId = "android-sdk"
                 version    = "0.0.1"
                 pom {
-                    name.set("Replay Android SDK")
+                    name.set("Replayfy Android SDK")
                     description.set(
-                        "Replayfy session replay + analytics for Android. " +
-                            "Captures session replays (view-tree + PixelCopy bitmaps), " +
-                            "taps, network requests, crashes, performance metrics " +
-                            "(cold start, frame drops, ANR, memory, thermal), and " +
-                            "console output.",
+                        "Replayfy — session replay, product analytics, and error " +
+                            "monitoring for Android. Captures session replays, taps and " +
+                            "gestures, screen navigation, network requests, crashes, " +
+                            "performance vitals (cold start, frame drops, ANR, memory, " +
+                            "thermal), and console output.",
                     )
-                    url.set("https://replayfy.io")
+                    url.set("https://replayfy.app")
                     licenses {
                         license {
                             name.set("MIT")

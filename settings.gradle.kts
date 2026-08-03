@@ -20,7 +20,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "replay-android-sdk"
+rootProject.name = "android-sdk"
 include(":sdk")
 // Optional Compose integration — Modifier.replayOcclude +
 // Modifier.replayTagScreenName. Customers building View-only Android

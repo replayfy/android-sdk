@@ -1,0 +1,5 @@
+# JitPack build configuration.
+# The SDK compiles against Java 17 (sourceCompatibility / jvmTarget = 17),
+# so JitPack must build on a JDK 17 toolchain rather than its default JDK 8.
+jdk:
+  - openjdk17

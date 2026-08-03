@@ -94,6 +94,37 @@ object Replay {
     }
 
     /**
+     * Report a developer-CAUGHT exception onto the session timeline. Emits the
+     * same reserved event the automatic crash handling produces, so a handled
+     * error is first-class in the dashboard's issues without crashing the app.
+     *
+     * @param error The caught throwable.
+     * @param handled True (default) for a caught/recovered error; pass false to
+     *                mark it as fatal. Maps to the wire's `fatal` discriminator
+     *                (`fatal = !handled`) — handled errors classify as an
+     *                "exception", unhandled as a "crash".
+     * @param properties Optional extra metadata, merged into the payload.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun captureException(
+        error: Throwable,
+        handled: Boolean = true,
+        properties: Map<String, Any?>? = null,
+    ) {
+        val payload = JSONObject().apply {
+            put("message", "${error.javaClass.name}: ${error.message ?: ""}")
+            put("stack", error.stackTraceToString())
+            put("fatal", !handled)
+            properties?.forEach { (k, v) -> if (v != null) put(k, v) }
+        }.toString()
+        // Reserved event name — the same channel Replay.track uses; the backend
+        // decodes `$exception` payloads into an issue row (crash vs exception by
+        // the `fatal` flag). `\$` escapes Kotlin string interpolation.
+        ReplayCore.shared.sendEvent("\$exception", payload)
+    }
+
+    /**
      * Report a host-captured interaction (used by the Flutter plugin's
      * Dart-side gesture capture, which knows the real widget label that the
      * native FlutterView tracker cannot). `kind` ∈ "tap"/"long_press"/"swipe".
