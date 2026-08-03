@@ -3,3 +3,11 @@
 # so JitPack must build on a JDK 17 toolchain rather than its default JDK 8.
 jdk:
   - openjdk17
+
+# Publish ONLY the core library module. JitPack's default builds every module,
+# which drags in :sdk-symbols-plugin — a build-time Gradle plugin that consumers
+# never fetch from here — and fails the whole publish if that module doesn't
+# compile. What consumers resolve (com.github.replayfy:android-sdk) IS :sdk, so
+# build and publish just that.
+install:
+  - ./gradlew :sdk:publishToMavenLocal
