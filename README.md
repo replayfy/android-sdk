@@ -59,7 +59,7 @@ allprojects {
 
 ```kotlin
 dependencies {
-    implementation("com.github.replayfy:android-sdk:0.0.1")
+    implementation("com.github.replayfy:android-sdk:0.0.2")
 }
 ```
 
