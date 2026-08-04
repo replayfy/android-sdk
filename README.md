@@ -291,7 +291,7 @@ Replay.setBlurDownscale(12)                        // stronger blur = larger fac
 ## Links
 
 - Docs: https://docs.replayfy.app/platforms/android
-- Dashboard: https://replayfy.app
+- Dashboard: https://app.replayfy.app
 
 ---
 
