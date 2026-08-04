@@ -59,7 +59,7 @@ allprojects {
 
 ```kotlin
 dependencies {
-    implementation("com.github.replayfy:android-sdk:0.0.2")
+    implementation("com.github.replayfy:android-sdk:0.0.3")
 }
 ```
 
@@ -301,6 +301,6 @@ yet active in this release — calling them today is safe but has no effect:
 `urlForCurrentSession()` / `urlForCurrentUser()`, `allowShortBreakForAnotherApp()`,
 and `setMultiSessionRecord()`._
 
-Licensed under the [MIT License](./LICENSE).
+Licensed under the [BSD-3-Clause License](./LICENSE).
 </content>
 </invoke>

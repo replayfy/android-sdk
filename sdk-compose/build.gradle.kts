@@ -65,8 +65,8 @@ afterEvaluate {
                     url.set("https://replayfy.io")
                     licenses {
                         license {
-                            name.set("MIT")
-                            url.set("https://opensource.org/licenses/MIT")
+                            name.set("BSD-3-Clause")
+                            url.set("https://opensource.org/licenses/BSD-3-Clause")
                             distribution.set("repo")
                         }
                     }
