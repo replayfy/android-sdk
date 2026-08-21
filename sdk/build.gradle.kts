@@ -1,11 +1,13 @@
+import com.vanniktech.maven.publish.AndroidSingleVariantLibrary
+import com.vanniktech.maven.publish.SonatypeHost
+
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
-    // Publishing — generates a Maven AAR + POM. Signing is added by the
-    // signing plugin which only activates when the maintainer has GPG
-    // keys configured (see gradle.properties templated keys).
-    `maven-publish`
-    signing
+    // Publishing to Maven Central via the Central Portal, with signing + POM +
+    // auto-release handled by one plugin (replaces the manual maven-publish +
+    // signing + OSSRH-staging wiring, and removes the "Close & Release" step).
+    id("com.vanniktech.maven.publish") version "0.30.0"
 }
 
 android {
@@ -93,106 +95,74 @@ android {
         }
     }
 
-    // Publish a `release` AAR component. AGP 7.1+ enables this via
-    // `singleVariant("release") { withSourcesJar(); withJavadocJar() }`
-    // which is what Maven Central requires (sources jar + javadoc jar
-    // are mandatory for OSSRH publication).
-    publishing {
-        singleVariant("release") {
-            withSourcesJar()
-            withJavadocJar()
-        }
-    }
+    // The release variant + mandatory sources/javadoc jars are configured by
+    // the vanniktech plugin below (AndroidSingleVariantLibrary), so no manual
+    // android.publishing.singleVariant block is needed here.
 }
 
 // -----------------------------------------------------------------------
-// Publication
+// Publication (vanniktech maven-publish)
 // -----------------------------------------------------------------------
-// Primary release path is JitPack (solo-friendly, no Sonatype account):
-// push a git tag and JitPack builds the artifact on demand. Consumers add
-// the JitPack repo + `com.github.replayfy:android-sdk:<tag>`.
-// JitPack overrides the `version` below with the tag it builds.
-//
-// The OSSRH repository + signing blocks below stay wired so a future Maven
-// Central move needs only credentials + a groupId flip (see io.replayfy note).
-//
-// Coordinates (JitPack): com.github.replayfy:android-sdk:0.0.1
-afterEvaluate {
-    publishing {
-        publications {
-            create<MavenPublication>("release") {
-                from(components["release"])
-                // JitPack coordinates. `com.github.<org>:<repo>` is what the
-                // JitPack maven repo resolves for github.com/replayfy/android-sdk.
-                groupId    = "com.github.replayfy"
-                artifactId = "android-sdk"
-                version    = "0.0.3"
-                pom {
-                    name.set("Replayfy Android SDK")
-                    description.set(
-                        "Replayfy — session replay, product analytics, and error " +
-                            "monitoring for Android. Captures session replays, taps and " +
-                            "gestures, screen navigation, network requests, crashes, " +
-                            "performance vitals (cold start, frame drops, ANR, memory, " +
-                            "thermal), and console output.",
-                    )
-                    url.set("https://replayfy.app")
-                    licenses {
-                        license {
-                            name.set("BSD-3-Clause")
-                            url.set("https://opensource.org/licenses/BSD-3-Clause")
-                            distribution.set("repo")
-                        }
-                    }
-                    developers {
-                        developer {
-                            id.set("iamnasirudeen")
-                            name.set("Nasirudeen Olohundare")
-                            email.set("iamnasirudeen@gmail.com")
-                        }
-                    }
-                    scm {
-                        connection.set("scm:git:git://github.com/replayfy/android-sdk.git")
-                        developerConnection.set("scm:git:ssh://github.com/replayfy/android-sdk.git")
-                        url.set("https://github.com/replayfy/android-sdk")
-                    }
-                }
+// TWO distribution channels, ONE publication:
+//   • Maven Central (PRIMARY): `./gradlew publishAndReleaseToMavenCentral` (the
+//     CI workflow) uploads to the Central Portal and auto-releases — no manual
+//     "Close & Release". Central is mirrored + cached worldwide, so consumers
+//     don't hit the "No route to host" / jitpack-unreachable failures corporate
+//     & CI networks throw at JitPack. Coordinate: app.replayfy:android-sdk:<ver>
+//     (CI passes -PpublishGroupId=app.replayfy -PpublishVersion=<tag>).
+//   • JitPack (FALLBACK): push a git tag; JitPack runs `:sdk:publishToMavenLocal`
+//     (which the vanniktech plugin still wires) and serves
+//     com.github.replayfy:android-sdk:<tag>. Used when no -P… are passed.
+// Credentials/signing come from env (see PUBLISHING.md):
+//   ORG_GRADLE_PROJECT_mavenCentralUsername / …Password  (Central Portal token)
+//   ORG_GRADLE_PROJECT_signingInMemoryKey / …KeyPassword (ASCII-armored GPG key)
+mavenPublishing {
+    // Central Portal + auto-release; sources + javadoc jars are mandatory for
+    // Central and are produced by AndroidSingleVariantLibrary below.
+    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
+    signAllPublications()
+    configure(
+        AndroidSingleVariantLibrary(
+            variant = "release",
+            sourcesJar = true,
+            publishJavadocJar = true,
+        ),
+    )
+    // Overridable coordinate — same build serves Central (app.replayfy via -P…)
+    // and JitPack (com.github.replayfy default; JitPack overrides the version).
+    coordinates(
+        (project.findProperty("publishGroupId") as String?) ?: "com.github.replayfy",
+        "android-sdk",
+        (project.findProperty("publishVersion") as String?) ?: "0.0.3",
+    )
+    pom {
+        name.set("Replayfy Android SDK")
+        description.set(
+            "Replayfy — session replay, product analytics, and error " +
+                "monitoring for Android. Captures session replays, taps and " +
+                "gestures, screen navigation, network requests, crashes, " +
+                "performance vitals (cold start, frame drops, ANR, memory, " +
+                "thermal), and console output.",
+        )
+        url.set("https://replayfy.app")
+        licenses {
+            license {
+                name.set("BSD-3-Clause")
+                url.set("https://opensource.org/licenses/BSD-3-Clause")
+                distribution.set("repo")
             }
         }
-        repositories {
-            maven {
-                name = "OSSRH"
-                val releasesRepoUrl =
-                    "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
-                val snapshotsRepoUrl =
-                    "https://s01.oss.sonatype.org/content/repositories/snapshots/"
-                url = uri(
-                    if (version.toString().endsWith("SNAPSHOT")) snapshotsRepoUrl
-                    else releasesRepoUrl,
-                )
-                credentials {
-                    username = (project.findProperty("ossrhUsername") as String?)
-                        ?: System.getenv("OSSRH_USERNAME")
-                                ?: ""
-                    password = (project.findProperty("ossrhPassword") as String?)
-                        ?: System.getenv("OSSRH_PASSWORD")
-                                ?: ""
-                }
+        developers {
+            developer {
+                id.set("iamnasirudeen")
+                name.set("Nasirudeen Olohundare")
+                email.set("iamnasirudeen@gmail.com")
             }
         }
-    }
-
-    // Sign only when keys are configured. CI without GPG can skip
-    // signing (Maven Central won't accept the artifact, but local
-    // builds + Sonatype snapshots still work).
-    signing {
-        val signingKey = (project.findProperty("signing.key") as String?)
-            ?: System.getenv("SIGNING_KEY")
-        val signingPassword = (project.findProperty("signing.password") as String?)
-            ?: System.getenv("SIGNING_PASSWORD")
-        if (signingKey != null && signingPassword != null) {
-            useInMemoryPgpKeys(signingKey, signingPassword)
-            sign(publishing.publications)
+        scm {
+            connection.set("scm:git:git://github.com/replayfy/android-sdk.git")
+            developerConnection.set("scm:git:ssh://github.com/replayfy/android-sdk.git")
+            url.set("https://github.com/replayfy/android-sdk")
         }
     }
 }
