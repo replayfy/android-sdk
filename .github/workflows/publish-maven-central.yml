@@ -1,0 +1,53 @@
+name: Publish to Maven Central
+
+# Tag-driven publish of the signed AAR to Maven Central via the Central Portal,
+# with AUTO-RELEASE (vanniktech's publishAndReleaseToMavenCentral) — no manual
+# "Close & Release". Central is the PRIMARY consumer channel; it's mirrored +
+# cached, so it avoids the "No route to host" / jitpack-unreachable failures
+# corporate & CI networks throw at JitPack (which stays an on-demand fallback,
+# no workflow needed). One-time owner setup: see PUBLISHING.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.0.4), no leading v"
+        required: true
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4
+        with:
+          distribution: temurin
+          java-version: "17" # AGP 8.5 needs JDK 17–21 (NOT 26)
+
+      - name: Resolve version
+        id: v
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"   # strip leading v
+          fi
+
+      - name: Publish + auto-release to Maven Central
+        env:
+          # Central Portal user token (Account ▸ Generate User Token) + GPG key.
+          # vanniktech reads these ORG_GRADLE_PROJECT_* names from the env.
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.CENTRAL_PORTAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.CENTRAL_PORTAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }} # ASCII-armored GPG private key
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          ./gradlew publishAndReleaseToMavenCentral \
+            -PpublishGroupId=app.replayfy \
+            -PpublishVersion=${{ steps.v.outputs.version }} \
+            --no-daemon --stacktrace
