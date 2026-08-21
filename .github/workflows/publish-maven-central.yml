@@ -47,7 +47,14 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }} # ASCII-armored GPG private key
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
         run: |
+          # --no-configuration-cache: gradle.properties enables the config cache
+          # globally (good for normal builds/JitPack), but vanniktech 0.30.0's
+          # SonatypeRepositoryBuildService injects the BuildFeatures service,
+          # which Gradle 8.10.2 can't serialize into the config-cache entry
+          # ("Services of type BuildFeatures are not available for injection").
+          # Publishing is a one-shot task the cache never helps, so disable it
+          # just here rather than weakening the global setting.
           ./gradlew publishAndReleaseToMavenCentral \
             -PpublishGroupId=app.replayfy \
             -PpublishVersion=${{ steps.v.outputs.version }} \
-            --no-daemon --stacktrace
+            --no-configuration-cache --no-daemon --stacktrace
