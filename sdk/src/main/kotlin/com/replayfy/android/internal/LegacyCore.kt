@@ -722,7 +722,7 @@ internal object LegacyCore {
     fun urlForCurrentSession(): String? {
         val rt = runtime ?: return null
         val host = dashboardHost() ?: return null
-        return "$host/sessions/${rt.sessionId}"
+        return "$host/recordings/${rt.sessionId}"
     }
 
     /**

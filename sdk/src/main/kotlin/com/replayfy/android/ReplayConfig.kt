@@ -111,4 +111,14 @@ data class ReplayConfig(
      * builds whose dashboard isn't theirs).
      */
     val useRemoteConfig: Boolean = true,
+
+    /**
+     * Screens to EXCLUDE from recording by name ("don't record this screen").
+     * Case-insensitive; matched against the auto-tagged / [Replay.tagScreenName]
+     * name (Activity / Fragment simpleName). While an excluded screen is
+     * foreground the frame loop pauses (taps / network / console / perf keep
+     * flowing, mirroring pauseRecording); it resumes on any non-excluded screen.
+     * Mutable at runtime via [Replay.excludeScreen] / [Replay.setExcludedScreens].
+     */
+    val excludedScreens: List<String> = emptyList(),
 )

@@ -202,9 +202,10 @@ object Replay {
     @JvmStatic
     fun tagScreenName(name: String) {
         LegacyCore.setRoute(name)
-        // Manual screen tag → viewComponent message, same as the
-        // Activity auto-tagger, so the dashboard Screens tab reflects it.
-        ReplayCore.shared.sendScreen(name, name, true)
+        // Manual screen tag → viewComponent message. Takes precedence over the
+        // Activity/Fragment auto-tag for this screen (mirrors iOS), so a
+        // name-based screen exclusion isn't undone by the class-name auto-tag.
+        ReplayCore.shared.tagScreenManual(name)
     }
 
     /**
@@ -304,9 +305,7 @@ object Replay {
      */
     @JvmStatic
     fun cancelSession() {
-        // ⚠️ STUB — LegacyCore isn't the live engine (init() boots ReplayCore);
-        // this does NOT cancel the live session. See docs/sdk-facade-status.md.
-        LegacyCore.cancelCurrentSession()
+        ReplayCore.shared.cancelSession()
     }
 
     // ------------------------------------------------------------------
@@ -558,6 +557,31 @@ object Replay {
     }
 
     /**
+     * Exclude a screen from recording by name ("don't record this screen").
+     * While an excluded screen is foreground the frame loop pauses (taps /
+     * network / console / perf keep flowing); it resumes on any non-excluded
+     * screen. Case-insensitive; matched against the auto-tagged / [tagScreenName]
+     * name. Distinct from `occludeSensitiveScreen`, which keeps recording but
+     * blanks the frame. Seedable at start via [ReplayConfig.excludedScreens].
+     */
+    @JvmStatic
+    fun excludeScreen(name: String) {
+        ReplayCore.shared.excludeScreen(name)
+    }
+
+    /** Stop excluding a previously-excluded screen. */
+    @JvmStatic
+    fun unexcludeScreen(name: String) {
+        ReplayCore.shared.unexcludeScreen(name)
+    }
+
+    /** Replace the whole excluded-screens denylist. */
+    @JvmStatic
+    fun setExcludedScreens(names: List<String>) {
+        ReplayCore.shared.setExcludedScreens(names)
+    }
+
+    /**
      * Attach the device's push-notification token to the session.
      * `platform` defaults to "fcm"; pass "huawei" if you're piping
      * a HMS token. Dashboard wiring (chip on player header) is
@@ -657,7 +681,7 @@ object Replay {
      */
     @JvmStatic
     fun enableAdvancedGestureRecognizer(enabled: Boolean) {
-        com.replayfy.android.internal.tracker.TouchListenerWrapper
+        com.replayfy.android.internal.mobile.MobileTouchCapture
             .advancedGesturesEnabled = enabled
     }
 
@@ -673,9 +697,7 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun allowShortBreakForAnotherApp(allow: Boolean, breakWindowMs: Long = 30_000L) {
-        // ⚠️ STUB — needs session-resume-window logic in the live engine; the
-        // LegacyCore flag is inert. See docs/sdk-facade-status.md.
-        LegacyCore.setAllowShortBreak(allow, breakWindowMs)
+        ReplayCore.shared.setAllowShortBreak(allow, breakWindowMs)
     }
 
     /**
@@ -687,9 +709,7 @@ object Replay {
      */
     @JvmStatic
     fun setMultiSessionRecord(enabled: Boolean) {
-        // ⚠️ STUB — needs multi-session lifecycle in the live engine; the
-        // LegacyCore flag is inert. See docs/sdk-facade-status.md.
-        LegacyCore.setMultiSessionRecord(enabled)
+        ReplayCore.shared.setMultiSessionRecord(enabled)
     }
 
     /**
