@@ -31,7 +31,7 @@ android {
 
         // SDK version baked into the user-agent the host app sends with
         // every batch. Bump in tandem with git tags.
-        buildConfigField("String", "SDK_VERSION", "\"0.0.3\"")
+        buildConfigField("String", "SDK_VERSION", "\"0.0.4\"")
         buildConfigField("String", "SDK_NAME", "\"@replay/android-sdk\"")
 
         consumerProguardFiles("consumer-rules.pro")
@@ -133,7 +133,7 @@ mavenPublishing {
     coordinates(
         (project.findProperty("publishGroupId") as String?) ?: "com.github.replayfy",
         "android-sdk",
-        (project.findProperty("publishVersion") as String?) ?: "0.0.3",
+        (project.findProperty("publishVersion") as String?) ?: "0.0.4",
     )
     pom {
         name.set("Replayfy Android SDK")
