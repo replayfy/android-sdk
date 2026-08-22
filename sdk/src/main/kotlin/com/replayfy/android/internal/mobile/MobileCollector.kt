@@ -32,6 +32,14 @@ class MobileCollector(private val transport: MobileTransport) {
         flush(late = true)
     }
 
+    /** Drop everything buffered WITHOUT sending — the cancelSession counterpart
+     *  to [stop] (which flushes). Stops the flush scheduler so nothing else
+     *  leaves. */
+    fun discard() {
+        scheduler?.shutdownNow(); scheduler = null
+        synchronized(lock) { waiting.clear() }
+    }
+
     fun add(message: ByteArray) {
         val total: Int
         synchronized(lock) {

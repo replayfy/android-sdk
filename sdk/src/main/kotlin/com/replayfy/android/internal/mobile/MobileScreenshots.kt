@@ -84,6 +84,14 @@ class MobileScreenshots(
         flush()
     }
 
+    /** Drop pending frames WITHOUT uploading — the cancelSession counterpart to
+     *  [stop] (which flushes). Stops the capture loop. */
+    fun discard() {
+        running = false
+        main.removeCallbacks(tick)
+        synchronized(lock) { pending.clear() }
+    }
+
     /** Suspend capture while the app is backgrounded (no point shooting an
      *  invisible window — it just inflates the archive). Flushes what's
      *  pending so nothing is lost. */

@@ -72,6 +72,46 @@ class ReplayCore private constructor() {
     // the Activity lifecycle callback.
     @Volatile private var autoScreenName = true
 
+    // ── Screen exclusion ("don't record this screen") ────────────────
+    // While an excluded screen is foreground the FRAME loop pauses (taps /
+    // network / console / perf keep flowing, mirroring pauseRecording).
+    // Seeded from ReplayConfig.excludedScreens, mutable at runtime.
+    @Volatile private var excludedScreens: Set<String> = emptySet()
+    // Whether the frame loop is paused BECAUSE of screen exclusion, so we only
+    // pause/resume on an actual enter/leave transition.
+    @Volatile private var framesExcluded = false
+    // A manual Replay.tagScreenName takes precedence over the Activity/Fragment
+    // auto-tag for the SAME screen (mirrors iOS + the autoScreenName doc
+    // contract). Set by a manual tag, consumed by the next auto-tag emit so the
+    // auto class name doesn't override it. Without this, "Menu" (manual) +
+    // "MenuActivity" (auto) both fire and a name-based screen exclusion flaps.
+    @Volatile private var manualTagPending = false
+
+    // ── Short break ("allow another app briefly") ────────────────────
+    // A background gap ≤ shortBreakWindowMs keeps the SAME session; a longer gap
+    // (or allow=false) rotates to a fresh session on return, so a long absence
+    // can't inflate one multi-hour session (the mobile analogue of the web SDK's
+    // inactivity rotation). Default tolerates 30 min so brief/medium app-switches
+    // don't fragment sessions.
+    @Volatile private var allowShortBreak = true
+    @Volatile private var shortBreakWindowMs = 1_800_000L
+    @Volatile private var backgroundedAt = 0L
+    // App-level foreground counter (started Activities). Distinguishes a true
+    // background (count → 0) from an in-app Activity transition, so short-break
+    // rotation doesn't fire on ordinary navigation. Config changes (rotation)
+    // are excluded via isChangingConfigurations.
+    @Volatile private var startedActivityCount = 0
+    // Lifecycle callbacks are registered once per process; kept across restarts.
+    @Volatile private var callbacksRegistered = false
+
+    // ── Multi-session gate (record one session, or many) ─────────────
+    // ENABLED → every rotation opens a session (default). NOT_STARTED → the
+    // current/next session is still allowed, then no more. DISABLED → refuse to
+    // open any further session this process. Evaluated at the start() chokepoint,
+    // mirroring the reference's 3-state model. Set via setMultiSessionRecord.
+    private enum class MultiSessionState { ENABLED, NOT_STARTED, DISABLED }
+    @Volatile private var multiSessionState = MultiSessionState.ENABLED
+
     @Volatile private var currentActivity: Activity? = null
     @Volatile var sessionId: String? = null
     // Project key + ingest host for the HTTP transport.
@@ -126,15 +166,30 @@ class ReplayCore private constructor() {
         // session while opted out (the legacy facade checked this; the live
         // engine didn't).
         if (OptOutStore(app).overallOptOut) return
+        // Multi-session gate — the single place a session opens. NOT_STARTED
+        // allows exactly this one (then flips to DISABLED); DISABLED refuses.
+        when (multiSessionState) {
+            MultiSessionState.DISABLED -> return
+            MultiSessionState.NOT_STARTED -> multiSessionState = MultiSessionState.DISABLED
+            MultiSessionState.ENABLED -> {}
+        }
         started = true
         val projectKey = config.apiKey
         val host = config.apiHost
         this.projectKey = projectKey
         this.host = host
         autoScreenName = config.autoScreenName
+        excludedScreens = config.excludedScreens.map { it.lowercase() }.toSet()
         application = app
         lastConfig = config
-        app.registerActivityLifecycleCallbacks(activityCallbacks)
+        // Register the lifecycle callbacks once per process — startNewSession
+        // (stop + start) must not double-register them (that would fire every
+        // callback twice); they reference the live fields, which this start()
+        // repopulates.
+        if (!callbacksRegistered) {
+            app.registerActivityLifecycleCallbacks(activityCallbacks)
+            callbacksRegistered = true
+        }
         // registerActivityLifecycleCallbacks does NOT replay the resume that
         // already happened. A host that calls init() after its Activity is
         // already resumed (React Native / Flutter plugins boot from a method
@@ -216,7 +271,10 @@ class ReplayCore private constructor() {
 
             collector.start()
             // captureSnapshotPixels=false → events only, no frames archive.
-            if (config.captureSnapshotPixels) screenshots.start()
+            // Also honour an exclusion that fired BEFORE start() finished (an
+            // excluded screen tagged during the async /start round-trip) — don't
+            // start the loop yet; it resumes when a non-excluded screen shows.
+            if (config.captureSnapshotPixels && !framesExcluded) screenshots.start()
             perf.start()
             // Flutter hosts pass captureTouch=false — the Dart layer reports
             // taps with the real widget label via reportInteraction (the native
@@ -266,6 +324,7 @@ class ReplayCore private constructor() {
                 preStart.clear()
                 ready = true
             }
+            android.util.Log.i("ReplaySdk", "session live: ${resp.sessionID}")
             // Session is live — notify onboarding/verification listeners.
             verificationListeners.forEach { runCatching { it.run() } }
         }
@@ -290,7 +349,57 @@ class ReplayCore private constructor() {
         consoleCapture?.stop(); consoleCapture = null
         collector?.stop(); collector = null
         sessionId = null
+        framesExcluded = false
+        // Reset the run flags + drop buffered pre-start messages so a following
+        // start() (startNewSession) actually opens a fresh session. The lifecycle
+        // callbacks are registered once for the process (see callbacksRegistered)
+        // and deliberately kept across a restart — they reference the live
+        // fields, which start() repopulates.
+        started = false
+        synchronized(preStart) { preStart.clear(); ready = false }
     }
+
+    /** Discard the current session WITHOUT uploading. Our engine streams
+     *  batches live every ~5s, so (unlike a deferred-upload model where cancel
+     *  is a pure local delete) we must signal the backend to DROP what already
+     *  landed, then clear the in-memory buffers and tear down — never flushing.
+     *  A fresh session can start afterward (the multi-session gate is untouched). */
+    fun cancelSession() {
+        // Backend drop first, while the session token is still valid — off the
+        // main thread (network), best-effort.
+        val sid = sessionId
+        val t = transport
+        if (sid != null && t != null) startExecutor.execute { runCatching { t.cancelSession(sid) } }
+        screenshots?.discard(); screenshots = null   // discard() = teardown WITHOUT flush
+        perf?.stop(); perf = null
+        consoleCapture?.stop(); consoleCapture = null
+        collector?.discard(); collector = null
+        sessionId = null
+        framesExcluded = false
+        started = false
+        synchronized(preStart) { preStart.clear(); ready = false }
+    }
+
+    // ── Advanced gestures / short break / multi-session / exclude ─────
+    /** Configure the short-break policy (see [allowShortBreak]). A zero/negative
+     *  window keeps the current default rather than disabling the window. */
+    fun setAllowShortBreak(allow: Boolean, windowMs: Long) {
+        allowShortBreak = allow
+        if (windowMs > 0) shortBreakWindowMs = windowMs
+    }
+
+    /** Turn multi-session recording on/off. Off → the current/next session is
+     *  still allowed, then no further sessions open this process. */
+    fun setMultiSessionRecord(enabled: Boolean) {
+        multiSessionState = if (enabled) MultiSessionState.ENABLED else MultiSessionState.NOT_STARTED
+    }
+
+    /** Replace the excluded-screens denylist. */
+    fun setExcludedScreens(names: List<String>) { excludedScreens = names.map { it.lowercase() }.toSet() }
+    /** Add one screen to the excluded set. */
+    fun excludeScreen(name: String) { excludedScreens = excludedScreens + name.lowercase() }
+    /** Remove one screen from the excluded set (recording resumes next time it shows). */
+    fun unexcludeScreen(name: String) { excludedScreens = excludedScreens - name.lowercase() }
 
     // ── Lifecycle controls (facade re-homes, #119) ───────────────────
     /** Pause periodic screenshot capture; events keep flowing. */
@@ -333,7 +442,7 @@ class ReplayCore private constructor() {
         when (kind) {
             "swipe" -> sendSwipe(label, x, y, direction)
             "tap" -> sendClick(label, x, y)
-            // long_press / double_tap / pinch → distinct gesture event.
+            // long_press / double_tap / pinch / rotate → distinct gesture event.
             else -> enqueue(MobileWire.gesture(kind, label, x, y, direction, now()))
         }
     }
@@ -377,8 +486,33 @@ class ReplayCore private constructor() {
         // finish sending.
         collector?.flushBlocking()
     }
-    fun sendScreen(screenName: String, viewName: String, visible: Boolean) =
+    /** A manual Replay.tagScreenName — authoritative for this screen, so the
+     *  Activity/Fragment auto-tag that follows (same physical screen) is
+     *  suppressed until the next screen. Mirrors iOS's manual-tag precedence. */
+    fun tagScreenManual(screenName: String) {
+        manualTagPending = true
+        sendScreen(screenName, screenName, true)
+    }
+
+    fun sendScreen(screenName: String, viewName: String, visible: Boolean) {
         enqueue(MobileWire.viewComponent(screenName, viewName, visible, now()))
+        // "Don't record this screen": pause the frame loop when we ENTER an
+        // excluded screen and resume when we LEAVE it (transition-gated so we
+        // don't churn on every tag). Everything else (this event, taps, network,
+        // console, perf) keeps flowing. Only act on a screen becoming visible.
+        if (!visible) return
+        val excluded = excludedScreens.contains(screenName.lowercase())
+        if (excluded != framesExcluded) {
+            framesExcluded = excluded
+            if (excluded) {
+                pauseCapture()
+                android.util.Log.i("ReplaySdk", "screen-exclude: PAUSED frames on '$screenName'")
+            } else {
+                resumeCapture()
+                android.util.Log.i("ReplaySdk", "screen-exclude: RESUMED frames on '$screenName'")
+            }
+        }
+    }
     fun sendEvent(name: String, payload: String) {
         // RN/Flutter forward console logs as the reserved `$console` event, so
         // honour the API's captureConsole toggle here too (sendLog already does
@@ -431,13 +565,20 @@ class ReplayCore private constructor() {
         override fun onActivityResumed(activity: Activity) {
             currentActivity = activity
             touch?.attach(activity)
-            // Resume screen capture on return to foreground.
-            screenshots?.resume()
+            // Resume screen capture on return to foreground — unless an excluded
+            // screen is (still) foreground; sendScreen re-evaluates exclusion.
+            if (!framesExcluded) screenshots?.resume()
             // Screen tracking → viewComponent message with the activity
-            // class name (drives the dashboard Screens tab + route).
+            // class name (drives the dashboard Screens tab + route). A manual
+            // tagScreenName in onCreate already named this screen → consume the
+            // flag and skip the auto class name so it doesn't override.
             if (autoScreenName) {
-                val name = activity.javaClass.simpleName
-                sendScreen(name, name, true)
+                if (manualTagPending) {
+                    manualTagPending = false
+                } else {
+                    val name = activity.javaClass.simpleName
+                    sendScreen(name, name, true)
+                }
             }
         }
         override fun onActivityPaused(activity: Activity) {
@@ -450,11 +591,39 @@ class ReplayCore private constructor() {
                 collector?.flush()
             }
         }
-        override fun onActivityStarted(activity: Activity) {}
+        override fun onActivityStarted(activity: Activity) {
+            // App-level foreground detection: count == 0 → 1 means the app
+            // returned from background (not an in-app Activity transition).
+            val wasBackground = startedActivityCount == 0
+            startedActivityCount++
+            if (wasBackground && backgroundedAt > 0L) {
+                val elapsed = System.currentTimeMillis() - backgroundedAt
+                backgroundedAt = 0L
+                // Short-break policy: a gap longer than the window (or short
+                // breaks disallowed) rotates to a fresh session so a long absence
+                // can't extend one session for hours. startNewSession() is gated
+                // by the multi-session state machine, so a disabled multi-session
+                // simply ends recording instead of rotating.
+                if (!allowShortBreak || elapsed > shortBreakWindowMs) {
+                    android.util.Log.i(
+                        "ReplaySdk",
+                        "short-break: gap ${elapsed / 1000}s > window ${shortBreakWindowMs / 1000}s — rotating session",
+                    )
+                    startNewSession()
+                }
+            }
+        }
         override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
             registerFragmentTracking(activity)
         }
-        override fun onActivityStopped(activity: Activity) {}
+        override fun onActivityStopped(activity: Activity) {
+            if (startedActivityCount > 0) startedActivityCount--
+            // App went to background (not a config change / rotation) → stamp the
+            // break start so onActivityStarted can size the gap on return.
+            if (startedActivityCount == 0 && !activity.isChangingConfigurations) {
+                backgroundedAt = System.currentTimeMillis()
+            }
+        }
         override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
         override fun onActivityDestroyed(activity: Activity) {}
     }
@@ -475,7 +644,10 @@ class ReplayCore private constructor() {
                 fm: androidx.fragment.app.FragmentManager,
                 f: androidx.fragment.app.Fragment,
             ) {
-                if (autoScreenName) { val n = f.javaClass.simpleName; sendScreen(n, n, true) }
+                if (autoScreenName) {
+                    if (manualTagPending) manualTagPending = false
+                    else { val n = f.javaClass.simpleName; sendScreen(n, n, true) }
+                }
             }
 
             override fun onFragmentPaused(

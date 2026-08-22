@@ -9,7 +9,9 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import java.lang.ref.WeakReference
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.hypot
 
 /**
@@ -26,9 +28,35 @@ class MobileTouchCapture(
     private var startY = 0f
     private var root: WeakReference<View>? = null
 
-    private companion object {
+    // ── Advanced multi-touch (pinch / rotate) ────────────────────────
+    // Correlate exactly two pointers: capture their initial separation + angle
+    // when the second finger lands (ACTION_POINTER_DOWN), track the latest on
+    // move, and emit ONCE when a finger lifts. `gestureConsumed` suppresses the
+    // single-touch tap/swipe classifier so a pinch isn't double-counted.
+    private var pinchTracking = false
+    private var gestureConsumed = false
+    private var pinchInitialDist = 0f
+    private var pinchInitialAngle = 0f
+    private var pinchLastDist = 0f
+    private var pinchLastAngle = 0f
+    private var pinchCenterX = 0f
+    private var pinchCenterY = 0f
+    private var pinchRawCenterX = 0f
+    private var pinchRawCenterY = 0f
+
+    companion object {
         /** Press held at least this long (with little movement) → long_press. */
-        const val LONG_PRESS_MS = 500L
+        private const val LONG_PRESS_MS = 500L
+
+        /**
+         * Capture pinch + rotate gestures. Off by default — correlating the two
+         * pointers costs nothing until a host opts in via
+         * `Replay.enableAdvancedGestureRecognizer(true)`. tap/swipe/long_press
+         * are always on regardless.
+         */
+        @Volatile
+        @JvmStatic
+        var advancedGesturesEnabled = false
     }
 
     /** Install on an activity's window by wrapping its callback. */
@@ -42,8 +70,36 @@ class MobileTouchCapture(
 
     fun handle(ev: MotionEvent) {
         when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { startX = ev.x; startY = ev.y }
+            MotionEvent.ACTION_DOWN -> {
+                startX = ev.x; startY = ev.y
+                pinchTracking = false
+                gestureConsumed = false
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (advancedGesturesEnabled && ev.pointerCount == 2) {
+                    pinchInitialDist = twoFingerDistance(ev)
+                    pinchInitialAngle = twoFingerAngle(ev)
+                    pinchLastDist = pinchInitialDist
+                    pinchLastAngle = pinchInitialAngle
+                    updatePinchCenter(ev)
+                    pinchTracking = true
+                    gestureConsumed = true
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (pinchTracking && ev.pointerCount >= 2) {
+                    pinchLastDist = twoFingerDistance(ev)
+                    pinchLastAngle = twoFingerAngle(ev)
+                    updatePinchCenter(ev)
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (pinchTracking) { emitPinchRotate(); pinchTracking = false }
+            }
             MotionEvent.ACTION_UP -> {
+                // A two-finger gesture already emitted — don't also classify the
+                // last finger's lift as a tap/swipe.
+                if (gestureConsumed) { gestureConsumed = false; return }
                 val dx = ev.x - startX; val dy = ev.y - startY
                 val held = ev.eventTime - ev.downTime
                 val kind = when {
@@ -61,6 +117,48 @@ class MobileTouchCapture(
                 val label = extractElementLabel(hit) ?: return
                 onGesture(label, x, y, kind, direction(dx, dy))
             }
+            MotionEvent.ACTION_CANCEL -> { pinchTracking = false; gestureConsumed = false }
+        }
+    }
+
+    private fun twoFingerDistance(ev: MotionEvent): Float =
+        hypot(ev.getX(1) - ev.getX(0), ev.getY(1) - ev.getY(0))
+
+    private fun twoFingerAngle(ev: MotionEvent): Float =
+        atan2(ev.getY(1) - ev.getY(0), ev.getX(1) - ev.getX(0))
+
+    /** Track the pinch center in both view-local and raw (screen) coords — the
+     *  latter for hit-testing the labelled view. rawX/rawY are only exposed for
+     *  pointer 0, so derive the offset from it. */
+    private fun updatePinchCenter(ev: MotionEvent) {
+        pinchCenterX = (ev.getX(0) + ev.getX(1)) / 2f
+        pinchCenterY = (ev.getY(0) + ev.getY(1)) / 2f
+        val offX = ev.rawX - ev.getX(0)
+        val offY = ev.rawY - ev.getY(0)
+        pinchRawCenterX = pinchCenterX + offX
+        pinchRawCenterY = pinchCenterY + offY
+    }
+
+    private fun emitPinchRotate() {
+        if (pinchInitialDist <= 1f) return
+        val scale = pinchLastDist / pinchInitialDist
+        var angleDelta = pinchLastAngle - pinchInitialAngle
+        while (angleDelta > PI) angleDelta -= (2 * PI).toFloat()   // normalize to [-π, π]
+        while (angleDelta < -PI) angleDelta += (2 * PI).toFloat()
+
+        val hit = root?.get()?.let { findViewAtPosition(it, pinchRawCenterX, pinchRawCenterY) }
+        val label = extractElementLabel(hit) ?: "view"
+        val x = pinchCenterX.coerceAtLeast(0f).toLong()
+        val y = pinchCenterY.coerceAtLeast(0f).toLong()
+        // Pinch when separation changed ≥15%; rotate when the line between the
+        // fingers turned ≥15°. Emit whichever crossed its threshold (both if the
+        // user did both). Sub-threshold two-finger motion (scroll / accidental
+        // touch) is dropped.
+        if (abs(scale - 1f) >= 0.15f) {
+            onGesture(label, x, y, "pinch", if (scale >= 1f) "out" else "in")
+        }
+        if (abs(angleDelta) >= (PI / 12).toFloat()) {
+            onGesture(label, x, y, "rotate", if (angleDelta >= 0) "cw" else "ccw")
         }
     }
 

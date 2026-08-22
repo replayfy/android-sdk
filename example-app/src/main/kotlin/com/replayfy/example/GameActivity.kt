@@ -5,7 +5,9 @@ import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
+import android.view.MotionEvent
 import android.widget.Button
 import android.widget.GridLayout
 import android.widget.LinearLayout
@@ -96,6 +98,84 @@ class GameActivity : AppCompatActivity() {
         setContentView(root)
 
         handler.postDelayed({ autoMove() }, 1200)
+
+        // Synthetic pinch + rotate test (adb can't inject native multi-touch):
+        // once the touch capture is attached, dispatch real 2-pointer
+        // MotionEvent sequences through the window callback the SDK wraps.
+        if (intent.getBooleanExtra("REPLAY_PINCH_TEST", false)) {
+            handler.postDelayed({ dispatchPinch(spread = true) }, 2500)   // → pinch "out"
+            handler.postDelayed({ dispatchRotate() }, 3500)              // → rotate
+        }
+    }
+
+    /** Dispatch a 2-finger spread (or close) as a real MotionEvent stream so the
+     *  SDK's swizzled Window.Callback classifies it as a pinch. */
+    private fun dispatchPinch(spread: Boolean) {
+        val cx = 540f
+        val cy = 900f
+        val near = 40f
+        val far = 360f
+        val steps = if (spread)
+            listOf(near, 120f, 220f, 320f, far)
+        else
+            listOf(far, 320f, 220f, 120f, near)
+        dispatchTwoFinger(steps.map { half -> // horizontal separation about the center
+            floatArrayOf(cx - half, cy, cx + half, cy)
+        })
+    }
+
+    /** Dispatch a 2-finger rotation about the center (near-constant separation)
+     *  so the SDK classifies it as a rotate, not a pinch. */
+    private fun dispatchRotate() {
+        val cx = 540f
+        val cy = 900f
+        val r = 300f
+        val anglesDeg = listOf(0.0, 15.0, 30.0, 45.0, 60.0)
+        dispatchTwoFinger(anglesDeg.map { deg ->
+            val a = Math.toRadians(deg)
+            val dx = (r * Math.cos(a)).toFloat()
+            val dy = (r * Math.sin(a)).toFloat()
+            // Two opposed points on the circle → the line between them rotates.
+            floatArrayOf(cx - dx, cy - dy, cx + dx, cy + dy)
+        })
+    }
+
+    /** Feed a sequence of [p0x,p0y,p1x,p1y] frames as DOWN → POINTER_DOWN →
+     *  MOVE… → POINTER_UP → UP through window.callback (which the SDK wraps). */
+    private fun dispatchTwoFinger(frames: List<FloatArray>) {
+        if (frames.isEmpty()) return
+        val cb = window.callback ?: return
+        val down = SystemClock.uptimeMillis()
+        fun props() = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        fun coords(f: FloatArray) = arrayOf(
+            MotionEvent.PointerCoords().apply { x = f[0]; y = f[1]; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = f[2]; y = f[3]; pressure = 1f; size = 1f },
+        )
+        fun send(action: Int, count: Int, f: FloatArray) {
+            val ev = MotionEvent.obtain(
+                down, SystemClock.uptimeMillis(), action, count,
+                props(), coords(f), 0, 0, 1f, 1f, 0, 0, 0, 0,
+            )
+            cb.dispatchTouchEvent(ev)
+            ev.recycle()
+        }
+        val first = frames.first()
+        // Pointer 0 down (single), then pointer 1 down (two).
+        send(MotionEvent.ACTION_DOWN, 1, floatArrayOf(first[0], first[1], first[0], first[1]))
+        send(
+            MotionEvent.ACTION_POINTER_DOWN or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+            2, first,
+        )
+        for (f in frames.drop(1)) send(MotionEvent.ACTION_MOVE, 2, f)
+        val last = frames.last()
+        send(
+            MotionEvent.ACTION_POINTER_UP or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+            2, last,
+        )
+        send(MotionEvent.ACTION_UP, 1, floatArrayOf(last[0], last[1], last[0], last[1]))
     }
 
     private fun autoMove() {
@@ -154,13 +234,17 @@ class GameActivity : AppCompatActivity() {
             }, resultPauseMs)
             // Demo crash: a few seconds after the games finish, throw an
             // uncaught exception so the SDK's crash handler + the dashboard
-            // Crashes tab are exercised end-to-end.
-            handler.postDelayed({
-                setStatus("Simulating crash…", "#FB7185")
-            }, resultPauseMs + 2200)
-            handler.postDelayed({
-                throw RuntimeException("Simulated crash from the Tic-Tac-Toe demo")
-            }, resultPauseMs + 3500)
+            // Crashes tab are exercised end-to-end. Gated behind
+            // REPLAY_DEMO_CRASH=1 so gesture / short-break / cancel tests can
+            // keep the app alive.
+            if (intent.getStringExtra("REPLAY_DEMO_CRASH") == "1") {
+                handler.postDelayed({
+                    setStatus("Simulating crash…", "#FB7185")
+                }, resultPauseMs + 2200)
+                handler.postDelayed({
+                    throw RuntimeException("Simulated crash from the Tic-Tac-Toe demo")
+                }, resultPauseMs + 3500)
+            }
         }
     }
 

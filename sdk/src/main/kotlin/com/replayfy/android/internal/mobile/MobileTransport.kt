@@ -79,6 +79,17 @@ class MobileTransport(host: String, private val projectKey: String) {
     fun sendImages(gzippedArchive: ByteArray): Boolean =
         post("/v1/mobile/images", gzippedArchive, json = false, bearer = true) != null
 
+    /** Best-effort "drop this session" signal — POST /v1/mobile/cancel with the
+     *  session bearer token and a JSON `{ sessionId }`. Fire-and-forget:
+     *  cancelSession tears down locally regardless of the outcome. */
+    fun cancelSession(sessionId: String): Boolean =
+        post(
+            "/v1/mobile/cancel",
+            JSONObject().put("sessionId", sessionId).toString().toByteArray(),
+            json = true,
+            bearer = true,
+        ) != null
+
     private fun post(path: String, body: ByteArray, json: Boolean, bearer: Boolean): ByteArray? {
         var conn: HttpURLConnection? = null
         return try {
