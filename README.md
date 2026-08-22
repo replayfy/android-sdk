@@ -59,7 +59,7 @@ allprojects {
 
 ```kotlin
 dependencies {
-    implementation("com.github.replayfy:android-sdk:0.0.3")
+    implementation("com.github.replayfy:android-sdk:0.0.4")
 }
 ```
 
@@ -121,6 +121,7 @@ default. Pass overrides through `ReplayConfig`:
 | `snapshotIntervalMs` | `Long` | `500` | Screen-capture cadence (~2 FPS); floored at 200 ms. |
 | `autoScreenName` | `Boolean` | `true` | Auto-name the current screen from each Activity's class name. |
 | `useRemoteConfig` | `Boolean` | `true` | Let dashboard settings override these values at runtime (your values act as cold-start fallbacks; ~15-minute refresh). |
+| `excludedScreens` | `List<String>` | `[]` | Screens excluded from frame capture by name (case-insensitive); other events keep flowing. Mutable at runtime via `excludeScreen` / `setExcludedScreens`. |
 
 ## API
 
@@ -202,11 +203,29 @@ Replay.tagScreenName("Checkout")                         // or set the current s
 Replay.setAutomaticScreenNameTagging(false)              // disable auto-naming; drive it yourself
 ```
 
+You can also exclude a screen from recording by name. While an excluded screen
+is in the foreground the periodic frame capture pauses (taps, network, console,
+and performance events keep flowing); it resumes on the next non-excluded
+screen. Matching is case-insensitive against the auto-tagged / `tagScreenName`
+name. This is distinct from `occludeSensitiveScreen` (which keeps recording but
+blanks the frame) — an excluded screen captures no frames at all. Seed the
+initial denylist at start via `ReplayConfig(excludedScreens = ...)`, or change it
+at runtime:
+
+```kotlin
+Replay.excludeScreen("PinEntry")                          // stop capturing frames of this screen
+Replay.unexcludeScreen("PinEntry")                        // start capturing it again
+Replay.setExcludedScreens(listOf("PinEntry", "Paywall"))  // replace the whole denylist
+```
+
 | Method | Description |
 |---|---|
 | `tagScreenName(name)` | Manually set the current screen name. |
 | `addObservedView(view, screenName, viewName?)` | Track a Compose/custom view as a screen (emits on attach/detach). |
 | `setAutomaticScreenNameTagging(enabled)` | Toggle Activity-based auto screen naming at runtime. |
+| `excludeScreen(name)` | Exclude a screen from frame capture by name (case-insensitive); other events keep flowing. |
+| `unexcludeScreen(name)` | Stop excluding a previously-excluded screen. |
+| `setExcludedScreens(names)` | Replace the entire excluded-screens denylist. |
 
 ### Text input tracking
 
@@ -247,6 +266,10 @@ Replay.pauseRecording()      // pause screen capture; events keep flowing
 Replay.resumeRecording()
 Replay.startNewSession()     // end the current session and begin a fresh one
 Replay.stop()                // end the session and upload the buffered batch
+Replay.cancelSession()       // discard the current session without uploading
+
+Replay.allowShortBreakForAnotherApp(true)   // a brief app-switch keeps the same session
+Replay.setMultiSessionRecord(false)         // record only one session per app launch
 ```
 
 | Method | Description |
@@ -255,8 +278,11 @@ Replay.stop()                // end the session and upload the buffered batch
 | `pauseRecording()` / `resumeRecording()` | Pause/resume screen capture while keeping the interaction timeline. |
 | `startNewSession()` | Force-end the current session and start a new one (logout/login, re-bucketing). |
 | `stop()` | End the current session and flush the buffered batch. The next foregrounding starts a fresh session. |
+| `cancelSession()` | Discard the current session without uploading — the server drops whatever already streamed. A fresh session can start afterward. |
 | `stopApplicationAndUploadData(timeoutMs?)` | Stop and block (up to `timeoutMs`, default 5000) until the batch is uploaded or persisted — for sign-out / shutdown flows. |
-| `enableAdvancedGestureRecognizer(enabled)` | Capture long-press, swipe, and pinch in addition to taps (off by default). |
+| `allowShortBreakForAnotherApp(allow, breakWindowMs?)` | A brief switch to another app (a gap up to `breakWindowMs`, default 30000) keeps the same session; a longer gap starts a fresh session on return. |
+| `setMultiSessionRecord(enabled)` | Record multiple sessions per app launch (default `true`) or, when `false`, only one — after the current/next session ends no further sessions open this process. |
+| `enableAdvancedGestureRecognizer(enabled)` | Capture pinch and rotate gestures in addition to the always-on tap / swipe / long-press (off by default). |
 | `addVerificationListener(listener)` / `removeVerificationListener(listener)` | Fire a callback after the first successful upload — for onboarding "Verify integration" flows. |
 
 ## Privacy & masking
@@ -297,9 +323,8 @@ Replay.setBlurDownscale(12)                        // stronger blur = larger fac
 
 _Some forward-compatibility methods are present on the public surface but not
 yet active in this release — calling them today is safe but has no effect:
-`cancelSession()`, `optOutSchematicRecordings()` / `isOptedOutSchematicRecordings()`,
-`urlForCurrentSession()` / `urlForCurrentUser()`, `allowShortBreakForAnotherApp()`,
-and `setMultiSessionRecord()`._
+`optOutSchematicRecordings()` / `isOptedOutSchematicRecordings()` and
+`urlForCurrentSession()` / `urlForCurrentUser()`._
 
 Licensed under the [BSD-3-Clause License](./LICENSE).
 </content>

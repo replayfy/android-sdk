@@ -666,16 +666,15 @@ object Replay {
     }
 
     /**
-     * Toggle capture of advanced gestures — long-press, four-
-     * direction swipe, and pinch — in addition to the always-on
-     * tap. When enabled, each gesture emits a TapEventData with
-     * `gesture` set to "long_press" / "swipe_left" / "swipe_right" /
-     * "swipe_up" / "swipe_down" / "pinch". Pinch events also carry
-     * a `pinchScale` (final ratio).
+     * Toggle capture of advanced gestures — pinch and rotate — in
+     * addition to the always-on tap / swipe / long-press. When
+     * enabled, a two-finger gesture emits a `gesture` message with
+     * `kind` "pinch" (direction "out"/"in" for spread/close) or
+     * "rotate" (direction "cw"/"ccw"). Sub-threshold two-finger
+     * motion (scrolls, accidental touches) is dropped.
      *
-     * Default off — the gesture detectors allocate lazily on
-     * first interactive touch only when this flag is true, so
-     * non-users pay zero overhead.
+     * Default off — when off the touch engine skips two-finger
+     * correlation entirely, so non-users pay zero overhead.
      *
      * Mirrors the reference mobile SDK's `enableAdvancedGestureRecognizer(boolean)`.
      */
