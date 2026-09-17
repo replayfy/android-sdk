@@ -83,7 +83,7 @@ class MyApp : Application() {
             this,
             ReplayConfig(
                 apiKey = "rpl_pk_xxxxxxxx",
-                apiHost = "https://us.replayfy.app",
+                apiHost = "https://us.replayfy.app",  // or your self-hosted API URL
             ),
         )
     }
@@ -105,7 +105,7 @@ default. Pass overrides through `ReplayConfig`:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `apiKey` | `String` | **required** | Project API key from your dashboard. |
-| `apiHost` | `String` | **required** | Ingest base URL — `https://us.replayfy.app`. |
+| `apiHost` | `String` | **required** | Ingest base URL — `https://us.replayfy.app` (or your self-hosted API URL). |
 | `projectId` | `String?` | `null` | Only needed when one key spans multiple projects. |
 | `distinctId` | `String?` | `null` | Known user id at init time; otherwise an install-stable anonymous id is generated. |
 | `flushIntervalMs` | `Long` | `5000` | How often the buffered batch is uploaded (ms). |
