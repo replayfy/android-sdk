@@ -20,7 +20,7 @@ import org.gradle.api.Project
  * }
  *
  * replaySymbols {
- *     apiKey = "rk_..."
+ *     apiKey = "rpl_sk_..."   // a SERVER key, from your CI secrets
  *     // apiHost defaults to https://api.replayfy.io — override
  *     // for self-hosted deployments.
  *     // uploadOnAssemble defaults to true; set false to keep the
@@ -43,7 +43,7 @@ import org.gradle.api.Project
  *      `app/build/intermediates/merged_native_libs/<variant>/out/lib/<abi>/lib*.so`),
  *      reads them, base64-encodes, POSTs to
  *      `<apiHost>/v1/replay/symbols/android/<versionName>/<versionCode>/<filename>`
- *      with the configured API key in `x-replay-api-key`.
+ *      with the configured SERVER key (`rpl_sk_...`) in `x-replay-api-key`.
  *
  * ## Design notes
  *

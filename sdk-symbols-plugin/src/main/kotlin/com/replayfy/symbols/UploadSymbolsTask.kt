@@ -57,7 +57,8 @@ abstract class UploadSymbolsTask : DefaultTask() {
     fun upload() {
         val key = apiKey.orNull?.takeIf { it.isNotBlank() }
             ?: throw GradleException(
-                "[replaySymbols] apiKey not configured. Set it via:\n" +
+                "[replaySymbols] apiKey not configured. Use a Replayfy SERVER key (rpl_sk_...), not the\n" +
+                    "publishable key the SDK uses, and read it from your CI secrets:\n" +
                     "  replaySymbols { apiKey = providers.gradleProperty(\"replayfyApiKey\").get() }\n" +
                     "or skip this variant by setting uploadOnAssemble = false.",
             )

@@ -7,7 +7,7 @@ package com.replayfy.symbols
  *
  * ```kotlin
  * replaySymbols {
- *     apiKey = "rk_..."
+ *     apiKey = "rpl_sk_..."   // a SERVER key, from your CI secrets
  *     apiHost = "https://api.replayfy.io"   // optional
  *     uploadOnAssemble = true                // optional, default true
  * }
@@ -16,9 +16,11 @@ package com.replayfy.symbols
 open class ReplaySymbolsExtension {
 
     /**
-     * The project's Replayfy API key (`rk_...`). Required. Wired
-     * into the `x-replay-api-key` header on every symbol upload —
-     * same authentication scheme the SDK uses for batch ingest.
+     * A Replayfy SERVER key (`rpl_sk_...`). Required. Sent in the
+     * `x-replay-api-key` header on every symbol upload. The publishable
+     * key (`rpl_pk_...`) that the SDK uses is rejected with a 403: it
+     * ships inside your app, so it must not be able to overwrite your
+     * symbols. Create a server key in Settings > Install > Generate key.
      *
      * **Don't commit secrets** — read from a Gradle property or
      * environment variable instead:

@@ -8,7 +8,7 @@
 //   }
 //
 //   replaySymbols {
-//     apiKey = "rk_..."
+//     apiKey = "rpl_sk_..."   // a SERVER key, from your CI secrets
 //     // apiHost defaults to https://api.replayfy.io — override for
 //     // self-hosted deployments.
 //     // uploadOnAssemble defaults to true.
