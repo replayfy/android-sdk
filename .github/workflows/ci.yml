@@ -25,3 +25,5 @@ jobs:
           java-version: "17" # JitPack builds on JDK 17 — match it here
       - name: Assemble release AAR
         run: ./gradlew :sdk:assembleRelease --no-daemon --stacktrace
+      - name: Build the symbols Gradle plugin
+        run: ./gradlew :sdk-symbols-plugin:build --no-daemon --stacktrace

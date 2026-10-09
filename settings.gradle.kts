@@ -28,7 +28,7 @@ include(":sdk")
 // runtime when unused.
 include(":sdk-compose")
 // Symbol-upload Gradle plugin — separate Maven artifact. Customers
-// apply it to their app module (`plugins { id "com.replayfy.symbols" }`)
+// apply it to their app module (`plugins { id("app.replayfy.symbols") }`)
 // to auto-upload R8 mapping.txt + NDK .so debug symbols on every
 // assembleRelease. Backend uses the uploaded symbols to deobfuscate
 // crash + ANR stacks at render time.

@@ -16,12 +16,12 @@ import org.gradle.api.Project
  * ```kotlin
  * plugins {
  *     id("com.android.application")
- *     id("com.replayfy.symbols") version "0.0.1"
+ *     id("app.replayfy.symbols") version "0.1.0"
  * }
  *
  * replaySymbols {
  *     apiKey = "rpl_sk_..."   // a SERVER key, from your CI secrets
- *     // apiHost defaults to https://api.replayfy.io — override
+ *     // apiHost defaults to https://us.replayfy.app — override
  *     // for self-hosted deployments.
  *     // uploadOnAssemble defaults to true; set false to keep the
  *     // plugin available but only run on explicit
@@ -72,27 +72,24 @@ class ReplaySymbolsPlugin : Plugin<Project> {
             ReplaySymbolsExtension::class.java,
         )
 
-        // We must wait until AGP has been applied to access the
-        // androidComponents extension. The afterEvaluate pattern
-        // here is intentional — Gradle's plugin-ordering doc says
-        // configuring on-AGP-presence inside the
-        // `androidComponents` callback is fragile; afterEvaluate
-        // is the boring + reliable hook.
-        project.afterEvaluate { proj ->
+        // Hook in when AGP's application plugin is applied (in either order
+        // relative to this plugin). onVariants MUST be registered during
+        // configuration: registering it from afterEvaluate fails every build
+        // with "It is too late to add actions as the callbacks already
+        // executed", because AGP runs its variant callbacks in its own
+        // afterEvaluate. The callbacks themselves run after the build script
+        // is evaluated, so `replaySymbols { }` values are set by then.
+        var androidAppApplied = false
+        project.plugins.withId("com.android.application") {
+            androidAppApplied = true
+            val proj = project
             // Application-typed extension so onVariants yields ApplicationVariant
             // (which exposes applicationId — the base Variant / library variant
             // does not). The plugin uploads per-app symbols, so it targets the
             // application module.
-            val components = proj.extensions.findByType(
+            val components = proj.extensions.getByType(
                 ApplicationAndroidComponentsExtension::class.java,
             )
-            if (components == null) {
-                proj.logger.warn(
-                    "[replaySymbols] no Android application module — skipping. " +
-                        "Apply com.android.application before com.replayfy.symbols.",
-                )
-                return@afterEvaluate
-            }
 
             components.onVariants { variant ->
                 // One task per variant. Named uploadReplaySymbols<Variant>
@@ -132,6 +129,16 @@ class ReplaySymbolsPlugin : Plugin<Project> {
                         assembleTask.finalizedBy(task)
                     }
                 }
+            }
+        }
+
+        project.afterEvaluate { proj ->
+            if (!androidAppApplied) {
+                proj.logger.warn(
+                    "[replaySymbols] no Android application module — skipping. " +
+                        "Apply app.replayfy.symbols to the module that applies " +
+                        "com.android.application.",
+                )
             }
         }
     }

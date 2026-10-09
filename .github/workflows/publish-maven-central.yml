@@ -54,7 +54,10 @@ jobs:
           # ("Services of type BuildFeatures are not available for injection").
           # Publishing is a one-shot task the cache never helps, so disable it
           # just here rather than weakening the global setting.
-          ./gradlew publishAndReleaseToMavenCentral \
+          # :sdk only — the symbols Gradle plugin has its own release workflow
+          # (publish-symbols-plugin.yml, tag symbols-v*), so an SDK tag must never
+          # republish it (Central rejects a duplicate version and fails the run).
+          ./gradlew :sdk:publishAndReleaseToMavenCentral \
             -PpublishGroupId=app.replayfy \
             -PpublishVersion=${{ steps.v.outputs.version }} \
             --no-configuration-cache --no-daemon --stacktrace

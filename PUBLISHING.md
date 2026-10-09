@@ -60,3 +60,19 @@ Running `./gradlew :sdk:publishToMavenLocal` (or a JitPack build) passes no
 `-PpublishGroupId/-PpublishVersion`, so the publication keeps the JitPack
 coordinate `com.github.replayfy:android-sdk` — nothing about the existing flow
 breaks.
+
+## Symbols Gradle plugin (`app.replayfy.symbols`)
+
+The `:sdk-symbols-plugin` module publishes separately from the SDK, as
+`app.replayfy:symbols-gradle-plugin` plus its plugin marker
+`app.replayfy.symbols:app.replayfy.symbols.gradle.plugin`, using the same Central
+Portal token and GPG secrets. It has its own version.
+
+1. `git tag symbols-v0.1.0 && git push origin symbols-v0.1.0`:
+   `publish-symbols-plugin.yml` runs `./gradlew :sdk-symbols-plugin:publishAndReleaseToMavenCentral
+   -PsymbolsPluginVersion=0.1.0`, which uploads and releases it.
+2. It syncs to Maven Central in ~15–30 min. Consumers need `mavenCentral()` in
+   `pluginManagement.repositories`.
+
+The SDK workflow publishes `:sdk` only, so an SDK `v*` tag never republishes the plugin.
+

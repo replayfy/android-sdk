@@ -223,11 +223,21 @@ abstract class UploadSymbolsTask : DefaultTask() {
             .post(jsonBody.toRequestBody("application/json".toMediaType()))
             .build()
         client.newCall(req).execute().use { resp ->
+            val body = try { resp.body?.string() } catch (_: Throwable) { null }
             if (!resp.isSuccessful) {
-                val body = try { resp.body?.string() } catch (_: Throwable) { null }
                 throw GradleException(
                     "[replaySymbols] upload of $filename failed: " +
                         "HTTP ${resp.code} ${resp.message}${body?.let { " — $it" } ?: ""}",
+                )
+            }
+            // A 2xx can still carry {"data":{"ok":false}} when the server
+            // refused to store the file (e.g. no object storage configured on
+            // a self-hosted instance, or a rejected filename). Don't report
+            // that as uploaded.
+            if (body != null && Regex("\"ok\"\\s*:\\s*false").containsMatchIn(body)) {
+                throw GradleException(
+                    "[replaySymbols] server did not store $filename (response: $body). " +
+                        "On a self-hosted instance, check that object storage (S3_*) is configured.",
                 )
             }
         }

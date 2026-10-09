@@ -1,15 +1,19 @@
+import com.vanniktech.maven.publish.GradlePlugin
+import com.vanniktech.maven.publish.JavadocJar
+import com.vanniktech.maven.publish.SonatypeHost
+
 // Standalone Gradle plugin published to Maven Central as
-// `com.replayfy:symbols-plugin`. Customers apply it to their app
-// module:
+// `app.replayfy:symbols-gradle-plugin` (plugin id `app.replayfy.symbols`).
+// Customers apply it to their app module:
 //
 //   plugins {
 //     id("com.android.application")
-//     id("com.replayfy.symbols") version "0.0.1"
+//     id("app.replayfy.symbols") version "0.1.0"
 //   }
 //
 //   replaySymbols {
 //     apiKey = "rpl_sk_..."   // a SERVER key, from your CI secrets
-//     // apiHost defaults to https://api.replayfy.io — override for
+//     // apiHost defaults to https://us.replayfy.app — override for
 //     // self-hosted deployments.
 //     // uploadOnAssemble defaults to true.
 //   }
@@ -17,6 +21,9 @@
 // The plugin discovers `mapping.txt` + per-ABI `.so` debug binaries
 // produced by R8 + the NDK build, then POSTs them to
 // /v1/replay/symbols/<platform>/<version>/<build>/<filename>.
+//
+// Released on its own cadence by .github/workflows/publish-symbols-plugin.yml
+// (tag `symbols-v<version>`), separate from the SDK's `v*` tags.
 
 plugins {
     // This module is a normal Plugin<Project> class, NOT precompiled script
@@ -25,20 +32,15 @@ plugins {
     // Gradle/Kotlin combo (NoSuchMethodError registerKotlinJvmCompileTask).
     `java-gradle-plugin`
     alias(libs.plugins.kotlin.jvm)
-    `maven-publish`
-    signing
+    // Same publisher as :sdk — uploads to the Central Portal and auto-releases.
+    // It applies maven-publish + signing itself and also publishes the plugin
+    // marker (app.replayfy.symbols:app.replayfy.symbols.gradle.plugin).
+    id("com.vanniktech.maven.publish") version "0.30.0"
 }
-
-group = "com.replayfy"
-version = "0.0.1"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
-    // Required by Maven Central — sources + javadoc jars must be
-    // published alongside the plugin artifact.
-    withSourcesJar()
-    withJavadocJar()
 }
 
 // Dependency repositories come from settings.gradle.kts
@@ -60,7 +62,9 @@ dependencies {
 gradlePlugin {
     plugins {
         register("replaySymbolsPlugin") {
-            id = "com.replayfy.symbols"
+            // Under the verified `app.replayfy` Central namespace: the plugin
+            // marker's groupId IS the plugin id, so it must live there too.
+            id = "app.replayfy.symbols"
             implementationClass = "com.replayfy.symbols.ReplaySymbolsPlugin"
             displayName = "Replayfy Symbols Plugin"
             description =
@@ -71,71 +75,42 @@ gradlePlugin {
     }
 }
 
-publishing {
-    publications {
-        // Mirrors the SDK's publication block — Maven Central
-        // requires the POM with developer + SCM info.
-        afterEvaluate {
-            named<MavenPublication>("pluginMaven") {
-                pom {
-                    name.set("Replayfy Symbols Plugin")
-                    description.set(
-                        "Gradle plugin that uploads R8 mapping.txt + " +
-                            "NDK .so debug symbols to Replayfy on every " +
-                            "assembleRelease.",
-                    )
-                    url.set("https://replayfy.io")
-                    licenses {
-                        license {
-                            name.set("BSD-3-Clause")
-                            url.set("https://opensource.org/licenses/BSD-3-Clause")
-                            distribution.set("repo")
-                        }
-                    }
-                    developers {
-                        developer {
-                            id.set("iamnasirudeen")
-                            name.set("Nasirudeen Olohundare")
-                            email.set("iamnasirudeen@gmail.com")
-                        }
-                    }
-                    scm {
-                        connection.set("scm:git:git://github.com/replayfy/android-sdk.git")
-                        developerConnection.set("scm:git:ssh://github.com/replayfy/android-sdk.git")
-                        url.set("https://github.com/replayfy/android-sdk")
-                    }
-                }
+mavenPublishing {
+    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
+    signAllPublications()
+    // Central requires a javadoc jar; this is a Kotlin plugin with KDoc in
+    // the sources jar, so ship an empty javadoc jar.
+    configure(GradlePlugin(javadocJar = JavadocJar.Empty(), sourcesJar = true))
+    coordinates(
+        "app.replayfy",
+        "symbols-gradle-plugin",
+        (project.findProperty("symbolsPluginVersion") as String?) ?: "0.1.0",
+    )
+    pom {
+        name.set("Replayfy Symbols Plugin")
+        description.set(
+            "Gradle plugin that uploads R8 mapping.txt + NDK .so debug " +
+                "symbols to Replayfy on every assembleRelease.",
+        )
+        url.set("https://replayfy.app")
+        licenses {
+            license {
+                name.set("MIT")
+                url.set("https://opensource.org/licenses/MIT")
+                distribution.set("repo")
             }
         }
-    }
-    repositories {
-        maven {
-            name = "OSSRH"
-            val releasesRepoUrl =
-                "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
-            val snapshotsRepoUrl =
-                "https://s01.oss.sonatype.org/content/repositories/snapshots/"
-            url = uri(
-                if (version.toString().endsWith("SNAPSHOT")) snapshotsRepoUrl
-                else releasesRepoUrl,
-            )
-            credentials {
-                username = (project.findProperty("ossrhUsername") as String?)
-                    ?: System.getenv("OSSRH_USERNAME") ?: ""
-                password = (project.findProperty("ossrhPassword") as String?)
-                    ?: System.getenv("OSSRH_PASSWORD") ?: ""
+        developers {
+            developer {
+                id.set("iamnasirudeen")
+                name.set("Nasirudeen Olohundare")
+                email.set("iamnasirudeen@gmail.com")
             }
         }
-    }
-}
-
-signing {
-    val signingKey = (project.findProperty("signing.key") as String?)
-        ?: System.getenv("SIGNING_KEY")
-    val signingPassword = (project.findProperty("signing.password") as String?)
-        ?: System.getenv("SIGNING_PASSWORD")
-    if (signingKey != null && signingPassword != null) {
-        useInMemoryPgpKeys(signingKey, signingPassword)
-        sign(publishing.publications)
+        scm {
+            connection.set("scm:git:git://github.com/replayfy/android-sdk.git")
+            developerConnection.set("scm:git:ssh://github.com/replayfy/android-sdk.git")
+            url.set("https://github.com/replayfy/android-sdk")
+        }
     }
 }

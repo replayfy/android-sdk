@@ -192,6 +192,26 @@ Timber.plant(object : Timber.Tree() {
 ```
 </details>
 
+#### Readable crash stacks (symbol upload)
+
+Release builds are obfuscated by R8, so crash stacks arrive as `a.b.c(SourceFile:1)`. The
+`app.replayfy.symbols` Gradle plugin uploads each build's `mapping.txt` (and native `.so` debug
+symbols) after `assembleRelease`, so the dashboard shows real class and method names. It needs a
+**server key** (`rpl_sk_…`, Settings → Install → Generate key), not the publishable key:
+
+```kotlin
+// settings.gradle.kts: pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+plugins {
+    id("com.android.application")
+    id("app.replayfy.symbols") version "0.1.0"
+}
+
+replaySymbols {
+    apiKey = providers.environmentVariable("REPLAYFY_SERVER_KEY").getOrElse("")
+    // apiHost = "https://replay.example.com" // only if you self-host
+}
+```
+
 ### Screen tracking
 
 Activities and androidx Fragments are tracked automatically. For Compose

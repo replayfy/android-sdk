@@ -8,7 +8,7 @@ package com.replayfy.symbols
  * ```kotlin
  * replaySymbols {
  *     apiKey = "rpl_sk_..."   // a SERVER key, from your CI secrets
- *     apiHost = "https://api.replayfy.io"   // optional
+ *     apiHost = "https://us.replayfy.app"   // optional; your own URL if self-hosted
  *     uploadOnAssemble = true                // optional, default true
  * }
  * ```
@@ -37,7 +37,7 @@ open class ReplaySymbolsExtension {
      * API host. Defaults to the canonical Replayfy ingest URL —
      * override for self-hosted deployments.
      */
-    var apiHost: String = "https://api.replayfy.io"
+    var apiHost: String = "https://us.replayfy.app"
 
     /**
      * When true (default), every `assemble<Variant>` finishes by
