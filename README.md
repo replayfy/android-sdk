@@ -27,9 +27,23 @@ happened.
 
 ## Install
 
-Add the JitPack repository to your project, then add the dependency.
+The SDK is published to Maven Central, which new Android projects already list
+in their repositories (`google()` + `mavenCentral()`). Add the dependency to
+your app module's **`build.gradle.kts`**:
 
-**`settings.gradle.kts`** (Gradle 7+, `dependencyResolutionManagement`):
+```kotlin
+dependencies {
+    implementation("app.replayfy:android-sdk:0.0.5")
+}
+```
+
+Requires `minSdk 21` or higher.
+
+<details>
+<summary>JitPack (fallback, if your network can't reach Maven Central)</summary>
+
+Add the JitPack repository in **`settings.gradle.kts`** (Gradle 7+,
+`dependencyResolutionManagement`):
 
 ```kotlin
 dependencyResolutionManagement {
@@ -41,8 +55,7 @@ dependencyResolutionManagement {
 }
 ```
 
-<details>
-<summary>Older Gradle (root <code>build.gradle</code> with <code>allprojects</code>)</summary>
+or, on older Gradle, in the root `build.gradle`:
 
 ```groovy
 allprojects {
@@ -53,17 +66,16 @@ allprojects {
     }
 }
 ```
-</details>
 
-**App module `build.gradle.kts`:**
+Then, in the app module's **`build.gradle.kts`**, the same version under
+JitPack's group:
 
 ```kotlin
 dependencies {
-    implementation("com.github.replayfy:android-sdk:0.0.4")
+    implementation("com.github.replayfy:android-sdk:0.0.5")
 }
 ```
-
-Requires `minSdk 21` or higher.
+</details>
 
 ## Quick start
 
@@ -349,6 +361,4 @@ _Some forward-compatibility methods are present on the public surface but not
 yet active in this release — calling them today is safe but has no effect:
 `urlForCurrentSession()` / `urlForCurrentUser()`._
 
-Licensed under the [BSD-3-Clause License](./LICENSE).
-</content>
-</invoke>
+Licensed under the [MIT License](./LICENSE).

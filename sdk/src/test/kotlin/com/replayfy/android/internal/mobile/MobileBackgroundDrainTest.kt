@@ -207,9 +207,12 @@ class MobileBackgroundDrainTest {
     fun aFrameLandingAfterStopStillGoesOut() {
         val uploader = FakeUploader()
         val shots = hostFed(uploader)
+        assertTrue(shots.captureBegan()) // a screenshot waiting on PixelCopy...
         shots.stop()
+        waitUntil { !shots.isDraining }
 
-        shots.appendFrame(frame()) // its capture was already in flight
+        shots.appendFrame(frame()) // ...lands after the stop's upload
+        shots.captureEnded()
 
         waitUntil { uploader.imageFrameCounts == listOf(1) }
         assertEquals("nothing flushes this session again, so it goes now", listOf(1), uploader.imageFrameCounts)

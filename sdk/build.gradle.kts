@@ -117,8 +117,9 @@ android {
 //     & CI networks throw at JitPack. Coordinate: app.replayfy:android-sdk:<ver>
 //     (CI passes -PpublishGroupId=app.replayfy -PpublishVersion=<tag>).
 //   • JitPack (FALLBACK): push a git tag; JitPack runs `:sdk:publishToMavenLocal`
-//     (which the vanniktech plugin still wires) and serves
-//     com.github.replayfy:android-sdk:<tag>. Used when no -P… are passed.
+//     (which the vanniktech plugin still wires, unsigned there) and serves
+//     com.github.replayfy:android-sdk:<version>: a request for 0.0.5 builds the
+//     v0.0.5 tag, which publishes 0.0.5. Used when no -P… are passed.
 // Credentials/signing come from env (see PUBLISHING.md):
 //   ORG_GRADLE_PROJECT_mavenCentralUsername / …Password  (Central Portal token)
 //   ORG_GRADLE_PROJECT_signingInMemoryKey / …KeyPassword (ASCII-armored GPG key)
@@ -126,7 +127,12 @@ mavenPublishing {
     // Central Portal + auto-release; sources + javadoc jars are mandatory for
     // Central and are produced by AndroidSingleVariantLibrary below.
     publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
-    signAllPublications()
+    // Central requires signed artifacts, and its CI publish has the key.
+    // JitPack has no key, and a release version can't be published unsigned
+    // once signing is on: every JitPack build from 0.0.4 on failed with "no
+    // configured signatory", so the fallback served nothing. JitPack sets
+    // JITPACK=true on its builds; skip signing there only.
+    if (providers.environmentVariable("JITPACK").orNull != "true") signAllPublications()
     configure(
         AndroidSingleVariantLibrary(
             variant = "release",
@@ -153,8 +159,8 @@ mavenPublishing {
         url.set("https://replayfy.app")
         licenses {
             license {
-                name.set("BSD-3-Clause")
-                url.set("https://opensource.org/licenses/BSD-3-Clause")
+                name.set("MIT")
+                url.set("https://opensource.org/licenses/MIT")
                 distribution.set("repo")
             }
         }

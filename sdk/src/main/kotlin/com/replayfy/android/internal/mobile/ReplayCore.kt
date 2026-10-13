@@ -73,6 +73,15 @@ class ReplayCore internal constructor() {
     private val preStart = ArrayList<ByteArray>()
     @Volatile private var ready = false
     @Volatile private var started = false
+    // Every stop() / cancelSession() moves the generation on. A start's /start
+    // task wires its session only while the generation it began in is still
+    // current, checked in the same sessionLock hold as the wiring, which stop()
+    // and cancelSession() take to tear down. A session ended (or rotated away)
+    // while its /start was in flight therefore never goes live, instead of
+    // wiring up afterwards with nothing left to stop it. Lock order:
+    // sessionLock, then preStart.
+    private val sessionLock = Any()
+    private var sessionGeneration = 0
     // ReplayConfig.autoScreenName — gates the auto screen-name emission from
     // the Activity lifecycle callback.
     @Volatile private var autoScreenName = true
@@ -229,7 +238,10 @@ class ReplayCore internal constructor() {
             MultiSessionState.NOT_STARTED -> multiSessionState = MultiSessionState.DISABLED
             MultiSessionState.ENABLED -> {}
         }
-        started = true
+        val generation = synchronized(sessionLock) {
+            started = true
+            sessionGeneration
+        }
         optOutStore = optOut
         val projectKey = config.apiKey
         val host = config.apiHost
@@ -278,136 +290,147 @@ class ReplayCore internal constructor() {
                 resendLateMessages(late, transport)
             }
             val resp = transport.start(deviceParams(app, projectKey)) ?: run {
-                started = false // allow a later retry if /start failed
+                // Allow a later retry, unless this start's session ended in the
+                // meantime: `started` then belongs to whatever came after it.
+                synchronized(sessionLock) { if (generation == sessionGeneration) started = false }
                 return@execute
             }
             // Server sampling gate dropped this launch — do not record. Leave
             // `started` true so we don't re-roll on a spurious re-init.
             if (!resp.record) return@execute
-            sessionId = resp.sessionID
-            startedAt = System.currentTimeMillis()
-            // Client config is the default; remote-config (the /start
-            // response) overrides it when the server specifies a value.
-            captureConsole = resp.captureConsole ?: config.captureConsole
-            captureNetwork = resp.captureNetwork ?: config.captureNetwork
-            // API value wins when present; otherwise fall back to local config
-            // (so clients can remote-configure from the dashboard, but local
-            // config still applies when the server is silent).
-            captureNetworkHeaders = resp.captureNetworkHeaders ?: config.captureHeaders
-            captureNetworkBodies = resp.captureNetworkBodies ?: config.captureBodies
+            // Wire the session up, unless it was ended or rotated away while
+            // /start was in flight (see sessionGeneration): then nothing is
+            // built, so nothing is left capturing or holding threads with no
+            // owner to stop it.
+            val live = synchronized(sessionLock) {
+                if (generation != sessionGeneration) return@synchronized false
+                sessionId = resp.sessionID
+                startedAt = System.currentTimeMillis()
+                // Client config is the default; remote-config (the /start
+                // response) overrides it when the server specifies a value.
+                captureConsole = resp.captureConsole ?: config.captureConsole
+                captureNetwork = resp.captureNetwork ?: config.captureNetwork
+                // API value wins when present; otherwise fall back to local config
+                // (so clients can remote-configure from the dashboard, but local
+                // config still applies when the server is silent).
+                captureNetworkHeaders = resp.captureNetworkHeaders ?: config.captureHeaders
+                captureNetworkBodies = resp.captureNetworkBodies ?: config.captureBodies
 
-            // Wire screenshot privacy masking to the PrivacyRegistry — the
-            // same collectors the legacy capture path consults. Without this
-            // the frames screenshotter masks nothing: addPrivacyView,
-            // occludeAll*, applyOcclusion, occludeSensitiveScreen and the
-            // bridge rects all register correctly but never reach the JPEGs.
-            // Invoked once per frame on the capture (main) thread, so the
-            // View-tree walk is safe.
-            privacyRectsProvider = provider@{
-                val root = currentActivity?.window?.decorView ?: return@provider emptyList()
-                val style = PrivacyRegistry.maskStyle
-                if (PrivacyRegistry.occludeAllScreen) {
-                    // Whole-screen occlude (occludeSensitiveScreen): one box over
-                    // the whole decor view. Drain any pending bridge rects so they
-                    // don't bleed into a later non-full-screen frame.
-                    PrivacyRegistry.consumePendingFrameRects()
-                    return@provider listOf(
-                        com.replayfy.android.MaskRect(Rect(0, 0, root.width, root.height), style))
+                // Wire screenshot privacy masking to the PrivacyRegistry — the
+                // same collectors the legacy capture path consults. Without this
+                // the frames screenshotter masks nothing: addPrivacyView,
+                // occludeAll*, applyOcclusion, occludeSensitiveScreen and the
+                // bridge rects all register correctly but never reach the JPEGs.
+                // Invoked once per frame on the capture (main) thread, so the
+                // View-tree walk is safe.
+                privacyRectsProvider = provider@{
+                    val root = currentActivity?.window?.decorView ?: return@provider emptyList()
+                    val style = PrivacyRegistry.maskStyle
+                    if (PrivacyRegistry.occludeAllScreen) {
+                        // Whole-screen occlude (occludeSensitiveScreen): one box over
+                        // the whole decor view. Drain any pending bridge rects so they
+                        // don't bleed into a later non-full-screen frame.
+                        PrivacyRegistry.consumePendingFrameRects()
+                        return@provider listOf(
+                            com.replayfy.android.MaskRect(Rect(0, 0, root.width, root.height), style))
+                    }
+                    // Native/bulk sources render with the global style; the bridge
+                    // rects (React Native / Flutter) carry their own per-region style.
+                    (PrivacyRegistry.sensitiveBounds(root) +
+                        PrivacyRegistry.bulkBounds(root) +
+                        PrivacyRegistry.composeBoundsRelativeTo(root))
+                        .map { com.replayfy.android.MaskRect(it, style) } +
+                        PrivacyRegistry.consumePendingFrameRects() +
+                        externalPrivacyRectsProvider()
                 }
-                // Native/bulk sources render with the global style; the bridge
-                // rects (React Native / Flutter) carry their own per-region style.
-                (PrivacyRegistry.sensitiveBounds(root) +
-                    PrivacyRegistry.bulkBounds(root) +
-                    PrivacyRegistry.composeBoundsRelativeTo(root))
-                    .map { com.replayfy.android.MaskRect(it, style) } +
-                    PrivacyRegistry.consumePendingFrameRects() +
-                    externalPrivacyRectsProvider()
-            }
 
-            val collector = MobileCollector(transport, late)
-            val screenshots = MobileScreenshots(
-                transport,
-                activityProvider = { currentActivity },
-                privacyRects = { privacyRectsProvider() },
-                // Host-fed capture (Flutter) must never start the native timer.
-                nativeCapture = config.captureSnapshotPixels,
-            ).apply { setSettings(resp.fps, resp.quality) }
-            val touch = MobileTouchCapture { label, x, y, kind, direction ->
-                // kind ∈ tap / swipe / long_press — routed to click / swipe /
-                // gesture by reportInteraction.
-                reportInteraction(kind, label, x, y, direction)
-            }
-
-            val perf = MobilePerfMonitor(app) { name, value -> sendPerformance(name, value) }
-
-            this.collector = collector
-            this.screenshots = screenshots
-            this.touch = touch
-            this.perf = perf
-
-            collector.start()
-            // captureSnapshotPixels=false → events only, no frames archive.
-            // Also honour a hold that started BEFORE start() finished (an
-            // excluded screen tagged during the async /start round-trip, a host
-            // pause, the schematic opt-out) or an app already backgrounded —
-            // don't start the loop yet; it resumes when nothing holds it.
-            if (config.captureSnapshotPixels && !framesHeld && !inBackground) screenshots.start()
-            perf.start()
-            // Flutter hosts pass captureTouch=false — the Dart layer reports
-            // taps with the real widget label via reportInteraction (the native
-            // view tree only ever sees the one FlutterView). Attached on the
-            // main thread: it reads the window's decor view (creating it if the
-            // Activity is still in onCreate, racing the main thread's own) and
-            // swaps the window callback.
-            if (config.captureTouch) {
-                currentActivity?.let { activity ->
-                    android.os.Handler(android.os.Looper.getMainLooper()).post { touch.attach(activity) }
+                val collector = MobileCollector(transport, late)
+                val screenshots = MobileScreenshots(
+                    transport,
+                    activityProvider = { currentActivity },
+                    privacyRects = { privacyRectsProvider() },
+                    // Host-fed capture (Flutter) must never start the native timer.
+                    nativeCapture = config.captureSnapshotPixels,
+                ).apply { setSettings(resp.fps, resp.quality) }
+                val touch = MobileTouchCapture { label, x, y, kind, direction ->
+                    // kind ∈ tap / swipe / long_press — routed to click / swipe /
+                    // gesture by reportInteraction.
+                    reportInteraction(kind, label, x, y, direction)
                 }
-            }
-            // Uncaught-exception crash reporting.
-            if (config.captureErrors) {
-                // JVM crashes — disk-backed so the record survives the dying
-                // process and is recovered + sent on the NEXT launch (matches
-                // iOS's PLCrashReporter disk+recover model; a synchronous
-                // in-session send loses crashes that die before the batch
-                // flushes). install() also drains a previous-process record
-                // and chains to the app's handler (Crashlytics/Sentry fire).
-                CrashHandler(
-                    context = app,
-                    onRecoveredCrash = { rec -> sendCrash(rec.className, rec.message, rec.stack) },
-                ).install()
-                // NDK / native-signal crashes (SIGSEGV/SIGBUS/SIGABRT/…) the
-                // JVM handler can't see. install() also drains a record left
-                // by a previous-process native crash. Optional — no-ops when
-                // libreplay_crash.so wasn't packed. (Re-homed from the old
-                // LegacyCore.autoBootstrap, which dropped these — #119.)
-                try {
-                    NativeCrashHandler(
+
+                val perf = MobilePerfMonitor(app) { name, value -> sendPerformance(name, value) }
+
+                this.collector = collector
+                this.screenshots = screenshots
+                this.touch = touch
+                this.perf = perf
+
+                collector.start()
+                // captureSnapshotPixels=false → events only, no frames archive.
+                // Also honour a hold that started BEFORE start() finished (an
+                // excluded screen tagged during the async /start round-trip, a host
+                // pause, the schematic opt-out) or an app already backgrounded —
+                // don't start the loop yet; it resumes when nothing holds it.
+                if (config.captureSnapshotPixels && !framesHeld && !inBackground) screenshots.start()
+                perf.start()
+                // Flutter hosts pass captureTouch=false — the Dart layer reports
+                // taps with the real widget label via reportInteraction (the native
+                // view tree only ever sees the one FlutterView). Attached on the
+                // main thread: it reads the window's decor view (creating it if the
+                // Activity is still in onCreate, racing the main thread's own) and
+                // swaps the window callback.
+                if (config.captureTouch) {
+                    currentActivity?.let { activity ->
+                        android.os.Handler(android.os.Looper.getMainLooper()).post { touch.attach(activity) }
+                    }
+                }
+                // Uncaught-exception crash reporting.
+                if (config.captureErrors) {
+                    // JVM crashes — disk-backed so the record survives the dying
+                    // process and is recovered + sent on the NEXT launch (matches
+                    // iOS's PLCrashReporter disk+recover model; a synchronous
+                    // in-session send loses crashes that die before the batch
+                    // flushes). install() also drains a previous-process record
+                    // and chains to the app's handler (Crashlytics/Sentry fire).
+                    CrashHandler(
                         context = app,
                         onRecoveredCrash = { rec -> sendCrash(rec.className, rec.message, rec.stack) },
                     ).install()
-                } catch (t: Throwable) {
-                    android.util.Log.w("ReplaySdk", "NDK signal handler init failed: ${t.message}")
+                    // NDK / native-signal crashes (SIGSEGV/SIGBUS/SIGABRT/…) the
+                    // JVM handler can't see. install() also drains a record left
+                    // by a previous-process native crash. Optional — no-ops when
+                    // libreplay_crash.so wasn't packed. (Re-homed from the old
+                    // LegacyCore.autoBootstrap, which dropped these — #119.)
+                    try {
+                        NativeCrashHandler(
+                            context = app,
+                            onRecoveredCrash = { rec -> sendCrash(rec.className, rec.message, rec.stack) },
+                        ).install()
+                    } catch (t: Throwable) {
+                        android.util.Log.w("ReplaySdk", "NDK signal handler init failed: ${t.message}")
+                    }
                 }
-            }
-            // Native console capture (System.out/err tee → log events). Gated
-            // on the resolved captureConsole; re-homed from LegacyCore (#119).
-            if (captureConsole) {
-                val console = ConsoleCapture(emit = { e ->
-                    sendLog(e.level, if (e.stack.isNullOrBlank()) e.message else "${e.message}\n${e.stack}")
-                })
-                console.start()
-                consoleCapture = console
-            }
+                // Native console capture (System.out/err tee → log events). Gated
+                // on the resolved captureConsole; re-homed from LegacyCore (#119).
+                if (captureConsole) {
+                    val console = ConsoleCapture(emit = { e ->
+                        sendLog(e.level, if (e.stack.isNullOrBlank()) e.message else "${e.message}\n${e.stack}")
+                    })
+                    console.start()
+                    consoleCapture = console
+                }
 
-            // Drain anything queued during the /start round-trip, then go
-            // live. Holding the monitor across the flip keeps a concurrent
-            // enqueue() from racing past the drain and losing its message.
-            synchronized(preStart) {
-                preStart.forEach { collector.add(it) }
-                preStart.clear()
-                ready = true
+                // Drain anything queued during the /start round-trip, then go
+                // live. Holding the monitor across the flip keeps a concurrent
+                // enqueue() from racing past the drain and losing its message.
+                synchronized(preStart) {
+                    preStart.forEach { collector.add(it) }
+                    preStart.clear()
+                    ready = true
+                }
+                true
             }
+            if (!live) return@execute
             android.util.Log.i("ReplaySdk", "session live: ${resp.sessionID}")
             // Session is live — notify onboarding/verification listeners.
             verificationListeners.forEach { runCatching { it.run() } }
@@ -436,22 +459,11 @@ class ReplayCore internal constructor() {
     fun stop(completion: (() -> Unit)? = null) {
         val drains = java.util.concurrent.atomic.AtomicInteger(2)
         val settled: () -> Unit = { if (drains.decrementAndGet() == 0) completion?.invoke() }
-        screenshots?.stop(settled) ?: settled()
-        screenshots = null
-        perf?.stop(); perf = null
-        consoleCapture?.stop(); consoleCapture = null
-        collector?.stop(settled) ?: settled()
-        collector = null
-        sessionId = null
-        framesExcluded = false
-        lastScreen = null
-        // Reset the run flags + drop buffered pre-start messages so a following
-        // start() (startNewSession) actually opens a fresh session. The lifecycle
-        // callbacks are registered once for the process (see callbacksRegistered)
-        // and deliberately kept across a restart — they reference the live
-        // fields, which start() repopulates.
-        started = false
-        synchronized(preStart) { preStart.clear(); ready = false }
+        val ended = endSession()
+        ended.screenshots?.stop(settled) ?: settled()
+        ended.perf?.stop()
+        ended.console?.stop()
+        ended.collector?.stop(settled) ?: settled()
     }
 
     /** [stop], then block for up to [timeoutMs] until the session's last frames
@@ -474,20 +486,49 @@ class ReplayCore internal constructor() {
      *  landed, then clear the in-memory buffers and tear down — never flushing.
      *  A fresh session can start afterward (the multi-session gate is untouched). */
     fun cancelSession() {
+        val t = transport
+        val ended = endSession()
         // Backend drop first, while the session token is still valid — off the
         // main thread (network), best-effort.
-        val sid = sessionId
-        val t = transport
+        val sid = ended.sessionId
         if (sid != null && t != null) startExecutor.execute { runCatching { t.cancelSession(sid) } }
-        screenshots?.discard(); screenshots = null   // discard() = teardown WITHOUT flush
-        perf?.stop(); perf = null
-        consoleCapture?.stop(); consoleCapture = null
-        collector?.discard(); collector = null
+        ended.screenshots?.discard()   // discard() = teardown WITHOUT flush
+        ended.perf?.stop()
+        ended.console?.stop()
+        ended.collector?.discard()
+    }
+
+    /** The parts of a session [endSession] takes down. */
+    private class EndedSession(
+        val sessionId: String?,
+        val screenshots: MobileScreenshots?,
+        val perf: MobilePerfMonitor?,
+        val console: ConsoleCapture?,
+        val collector: MobileCollector?,
+    )
+
+    /** Detach the live session and hand back its parts for the caller to stop
+     *  or discard. Under sessionLock, so a /start still in flight sees the
+     *  session gone instead of wiring it up afterwards (see sessionGeneration);
+     *  the caller tears the parts down after the lock is released, so no
+     *  completion runs under it. Also resets the run flags and drops buffered
+     *  pre-start messages, so a following start() (startNewSession) actually
+     *  opens a fresh session. The lifecycle callbacks are registered once for
+     *  the process (see callbacksRegistered) and deliberately kept across a
+     *  restart — they reference the live fields, which start() repopulates. */
+    private fun endSession(): EndedSession = synchronized(sessionLock) {
+        sessionGeneration++
+        val ended = EndedSession(sessionId, screenshots, perf, consoleCapture, collector)
+        screenshots = null
+        perf = null
+        consoleCapture = null
+        collector = null
         sessionId = null
         framesExcluded = false
         lastScreen = null
         started = false
         synchronized(preStart) { preStart.clear(); ready = false }
+        ended
     }
 
     // ── Advanced gestures / short break / multi-session / exclude ─────
@@ -581,6 +622,13 @@ class ReplayCore internal constructor() {
     /** The live session's frame buffer and message queue. For tests. */
     internal val liveScreenshots: MobileScreenshots? get() = screenshots
     internal val liveCollector: MobileCollector? get() = collector
+
+    /** Block until the /start work queued so far has run. For tests. */
+    internal fun awaitStartQueue(timeoutMs: Long) {
+        val done = java.util.concurrent.CountDownLatch(1)
+        startExecutor.execute { done.countDown() }
+        done.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
 
     // ── Message API (called by listeners) ────────────────────────────
     /**

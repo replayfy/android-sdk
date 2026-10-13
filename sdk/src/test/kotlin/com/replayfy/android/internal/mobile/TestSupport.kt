@@ -10,6 +10,19 @@ internal fun waitUntil(timeoutMs: Long = 5_000, condition: () -> Boolean) {
     while (!condition() && System.currentTimeMillis() < deadline) Thread.sleep(10)
 }
 
+/** Every thread alive right now. */
+internal fun liveThreads(): Set<Thread> = Thread.getAllStackTraces().keys.filter { it.isAlive }.toSet()
+
+/** The threads started since [before] that are still alive, by name, leaving
+ *  out the fake ingest server's own and daemon threads: the JVM starts its
+ *  graphics service threads (AppKit, Java2D) on the first decoded bitmap,
+ *  while every thread the engine starts (executor workers, HandlerThreads
+ *  made from the main thread) is a non-daemon one. */
+internal fun threadsStartedSince(before: Set<Thread>): List<String> =
+    liveThreads()
+        .filter { it !in before && !it.isDaemon && it.name != FakeIngestServer.THREAD_NAME }
+        .map { it.name }
+
 /** Timestamps of the frames in one gzipped `[u64 ts][u32 size][jpeg]` archive. */
 internal fun frameTimestamps(gz: ByteArray): List<Long> {
     val raw = GZIPInputStream(ByteArrayInputStream(gz)).use { it.readBytes() }

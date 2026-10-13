@@ -5,7 +5,7 @@ The SDK ships on **two** channels. Central is primary; JitPack is a fallback.
 | Channel | Coordinate | When it's used |
 | --- | --- | --- |
 | **Maven Central** (primary) | `app.replayfy:android-sdk:<version>` | production consumers; mirrored + cached, never blocked |
-| **JitPack** (fallback) | `com.github.replayfy:android-sdk:<tag>` | on-demand from a git tag; no account needed |
+| **JitPack** (fallback) | `com.github.replayfy:android-sdk:<version>` | on-demand from a git tag; no account needed |
 
 ## Why Central is primary
 
@@ -40,13 +40,22 @@ javadoc + POM at `app.replayfy:android-sdk`.)
 
 ## Cutting a release
 
-1. `git tag v0.0.4 && git push origin v0.0.4` — `publish-maven-central.yml` runs
+1. Check that the default `sdkVersion` in `sdk/build.gradle.kts` is the version
+   you are tagging (`0.0.5` for `v0.0.5`) and that `CHANGELOG.md` has its entry
+   (dated). JitPack builds pass no version, so that default is what their
+   sessions report as `trackerVersion`.
+2. `git tag v0.0.5 && git push origin v0.0.5` — `publish-maven-central.yml` runs
    `./gradlew publishAndReleaseToMavenCentral -PpublishGroupId=app.replayfy
-   -PpublishVersion=0.0.4`, which uploads **and releases** to Central.
-2. It syncs to Maven Central in ~15–30 min. No UI step.
-3. Once live, the Flutter plugin's `app.replayfy:android-sdk:0.0.4` resolves from
-   `mavenCentral()`. JitPack still serves `com.github.replayfy:android-sdk:0.0.4`
-   from the same tag for anyone pinned to it.
+   -PpublishVersion=0.0.5`, which uploads **and releases** to Central.
+3. It syncs to Maven Central in ~15–30 min. No UI step.
+4. Once live, `app.replayfy:android-sdk:0.0.5` (what the README and the Flutter
+   plugin use) resolves from `mavenCentral()`. JitPack builds the same tag on
+   the first request for `com.github.replayfy:android-sdk:0.0.5` (it finds
+   `v0.0.5` for `0.0.5`, and the build publishes `0.0.5`), unsigned: it has no
+   key, so `sdk/build.gradle.kts` skips signing when `JITPACK=true`. Check
+   `https://jitpack.io/com/github/replayfy/android-sdk/0.0.5/build.log` once.
+5. Bump the default `sdkVersion` to the next release (e.g. `0.0.6`), so local
+   and JitPack builds of `main` aren't reported as the release before them.
 
 To publish from your Mac instead of CI, export the four env vars
 (`ORG_GRADLE_PROJECT_mavenCentralUsername`/`…Password`,

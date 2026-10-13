@@ -2,6 +2,7 @@ package com.replayfy.android.internal.mobile
 
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
@@ -13,6 +14,11 @@ import java.util.concurrent.TimeUnit
  *
  * [lateStore] keeps the session's final (/late) batch on disk until the
  * server accepts it (see [MobileLateMessages]); null disables that.
+ *
+ * One instance per session. Its sender thread is shut down once the session
+ * is over: after [stop]'s last send (the /late batch, or its copy on disk),
+ * or once [discard] has halted any send in flight. The reference tracker
+ * shuts its collector's executor down on stop the same way.
  */
 class MobileCollector(
     private val transport: MobileUploading,
@@ -40,6 +46,10 @@ class MobileCollector(
     /** discard() ran: drop everything and send nothing more. */
     private var discarded = false
     private val sendWaiters = ArrayList<() -> Unit>()
+    /** stop() asked for the session's last send. */
+    private var stopRequested = false
+    /** The sender thread is shut down: nothing more is sent. */
+    private var released = false
 
     fun start() {
         scheduler = Executors.newSingleThreadScheduledExecutor().also {
@@ -50,7 +60,7 @@ class MobileCollector(
     /** Session end: send everything queued, the last batch via /late (the
      *  server's end-of-session signal). The send loop holds `this`, so the
      *  drain finishes after ReplayCore drops its reference. [completion] runs
-     *  once that drain settles. */
+     *  once that drain settles, after which the sender thread is shut down. */
     fun stop(completion: (() -> Unit)? = null) {
         scheduler?.shutdownNow(); scheduler = null
         request(drain = true, late = true, completion = completion)
@@ -58,19 +68,23 @@ class MobileCollector(
 
     /** Drop everything buffered WITHOUT sending — the cancelSession counterpart
      *  to [stop] (which flushes). Stops the flush scheduler so nothing else
-     *  leaves, and a drain already running stops before its next batch. */
+     *  leaves, and a drain already running stops before its next batch; the
+     *  sender thread goes once it has. */
     fun discard() {
         scheduler?.shutdownNow(); scheduler = null
-        synchronized(lock) {
+        val release = synchronized(lock) {
             discarded = true
             waiting.clear()
+            releaseIfDoneLocked()
         }
+        if (release) sender.shutdown()
     }
 
     fun add(message: ByteArray) {
         val total: Int
         synchronized(lock) {
-            if (discarded) return
+            // Once the session is over nothing would ever send it.
+            if (discarded || released) return
             if (waiting.size < 10_000) waiting.add(message)
             total = waiting.sumOf { it.size }
         }
@@ -94,9 +108,12 @@ class MobileCollector(
 
     private fun request(drain: Boolean, late: Boolean, completion: (() -> Unit)?) {
         val startLoop = synchronized(lock) {
-            if (discarded) {
+            if (discarded || released) {
                 false
             } else {
+                // Recorded with the loop it starts or joins, so the thread
+                // can't go before that loop has made the session's last send.
+                if (late) stopRequested = true
                 // A session end sends the whole queue, however long: the engine
                 // has let go of this collector, so nothing else would, and /late
                 // must close it. Each round takes at least one message and the
@@ -118,8 +135,8 @@ class MobileCollector(
                 true
             }
         }
-        // After discard() nothing is sent, but a caller waiting on the drain
-        // still hears back.
+        // After discard(), or once the session is over, nothing is sent, but a
+        // caller waiting on the drain still hears back.
         if (startLoop) sender.execute { sendLoop() } else completion?.let { runWaiters(listOf(it)) }
     }
 
@@ -205,16 +222,31 @@ class MobileCollector(
         return content.toByteArray()
     }
 
-    /** Ends the send loop and hands back its waiters. Call with `lock` held,
-     *  in the same hold as the check that ended the loop, so a request that
-     *  arrives in between can't be dropped; run the waiters after releasing. */
+    /** Ends the send loop and hands back its waiters, led by the sender's
+     *  shutdown when this loop made the session's last send. Call with `lock`
+     *  held, in the same hold as the check that ended the loop, so a request
+     *  that arrives in between can't be dropped; run the waiters after
+     *  releasing. */
     private fun endSendingLocked(): List<() -> Unit> {
-        val waiters = ArrayList(sendWaiters)
-        sendWaiters.clear()
+        val waiters = ArrayList<() -> Unit>()
         sending = false
+        // shutdown(), not shutdownNow(): it lets this task (the loop itself)
+        // finish on the sender, and a crash flush queued behind it still runs.
+        if (releaseIfDoneLocked()) waiters.add { sender.shutdown() }
+        waiters.addAll(sendWaiters)
+        sendWaiters.clear()
         roundsLeft = 0
         lateRequested = false
         return waiters
+    }
+
+    /** True, once, when the sender thread can go: stop() asked for the
+     *  session's last send (or discard() ran) and no loop is running. Call
+     *  with `lock` held, and shut the sender down after releasing it. */
+    private fun releaseIfDoneLocked(): Boolean {
+        if (released || sending || !(stopRequested || discarded)) return false
+        released = true
+        return true
     }
 
     private fun runWaiters(waiters: List<() -> Unit>) {
@@ -235,7 +267,7 @@ class MobileCollector(
         val batch = ArrayList<ByteArray>()
         val startIndex: Long
         synchronized(lock) {
-            if (waiting.isEmpty()) return
+            if (released || waiting.isEmpty()) return
             batch.addAll(waiting); waiting.clear()
             startIndex = nextIndex; nextIndex += batch.size
         }
@@ -244,9 +276,15 @@ class MobileCollector(
         // there throws NetworkOnMainThreadException. Send on the background
         // sender and block the caller (up to 3s) until it completes.
         val done = java.util.concurrent.CountDownLatch(1)
-        sender.execute {
-            try { transport.sendLateMessages(raw) } catch (_: Throwable) {}
-            done.countDown()
+        try {
+            sender.execute {
+                try { transport.sendLateMessages(raw) } catch (_: Throwable) {}
+                done.countDown()
+            }
+        } catch (_: RejectedExecutionException) {
+            // The session ended on another thread just now and its sender is
+            // gone; throwing here would bury the crash being reported.
+            return
         }
         try { done.await(3, TimeUnit.SECONDS) } catch (_: Throwable) {}
     }

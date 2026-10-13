@@ -26,10 +26,13 @@ internal class FakeIngestServer : AutoCloseable {
     @Volatile var failLate = false
     /** /start waits for this before answering (a slow first round-trip). */
     @Volatile var startGate: java.util.concurrent.CountDownLatch? = null
+    /** Answer this many of the next /start requests with a 500. */
+    val failStarts = AtomicInteger()
 
     private val sessions = AtomicInteger()
     private val socket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
-    private val pool = Executors.newCachedThreadPool()
+    // Named, so a test counting the engine's threads can leave the server's out.
+    private val pool = Executors.newCachedThreadPool { r -> Thread(r, THREAD_NAME) }
 
     val url: String get() = "http://127.0.0.1:${socket.localPort}"
 
@@ -67,7 +70,8 @@ internal class FakeIngestServer : AutoCloseable {
         if (path == "/v1/mobile/start") startGate?.await(10, java.util.concurrent.TimeUnit.SECONDS)
         val failed = (path == "/v1/mobile/images" && failImages) ||
             (path == "/v1/mobile/i" && failMessages) ||
-            (path == "/v1/mobile/late" && failLate)
+            (path == "/v1/mobile/late" && failLate) ||
+            (path == "/v1/mobile/start" && failStarts.getAndUpdate { maxOf(it - 1, 0) } > 0)
         if (!failed) requests.add(Request(path, auth, body))
         val (code, reply) = when {
             failed -> 500 to "{}"
@@ -124,5 +128,9 @@ internal class FakeIngestServer : AutoCloseable {
             return i
         }
         return -1
+    }
+
+    companion object {
+        const val THREAD_NAME = "fake-ingest-server"
     }
 }

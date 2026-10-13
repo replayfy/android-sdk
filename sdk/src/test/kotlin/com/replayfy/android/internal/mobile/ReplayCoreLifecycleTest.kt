@@ -13,6 +13,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -407,6 +408,97 @@ class ReplayCoreLifecycleTest {
         assertTrue("the new session is told which screen it starts on", server.messagesContain("Secret", auth = "Bearer tok2"))
     }
 
+    @Test
+    fun sessionRotationsLeaveNoThreadsBehind() {
+        launch(config(nativeCapture = true))
+        val before = liveThreads()
+
+        repeat(3) {
+            // Let the capture timer take a few screenshots, so each session
+            // has used every thread it can start.
+            idleMain(1_000)
+            core.sendEvent("tick_$it", "{}")
+            core.startNewSession()
+            awaitSessions(it + 2)
+        }
+        core.stopAndWait(5_000)
+
+        waitUntil { threadsStartedSince(before).isEmpty() }
+        assertEquals("each session's threads end with it", emptyList<String>(), threadsStartedSince(before))
+    }
+
+    // ── Session start ────────────────────────────────────────────────
+
+    @Test
+    fun aSessionEndedWhileItsStartIsInFlightNeverGoesLive() {
+        val gate = java.util.concurrent.CountDownLatch(1)
+        server.startGate = gate // the first /start is slow
+        core.start(app, config(nativeCapture = true))
+        Robolectric.buildActivity(HomeActivity::class.java).setup()
+        val before = liveThreads()
+
+        // optOutOverall(true), or Replay.stop() right after init.
+        core.stop()
+        server.startGate = null
+        gate.countDown()
+        core.awaitStartQueue(10_000)
+        idleMain(1_000)
+
+        assertEquals("the session ended before it went live", 0, sessionsLive.get())
+        assertNull(core.sessionId)
+        assertNull("nothing captures", core.liveScreenshots)
+        assertTrue("nothing is sent", server.requests.none { it.auth == "Bearer tok1" })
+        assertEquals("no threads start", emptyList<String>(), threadsStartedSince(before))
+
+        core.start(app, config(nativeCapture = true))
+        awaitSessions(1)
+        assertEquals("a later start still opens a session", "s2", core.sessionId)
+    }
+
+    @Test
+    fun aRotationWhileTheFirstStartIsInFlightOpensOnlyTheNewSession() {
+        val gate = java.util.concurrent.CountDownLatch(1)
+        server.startGate = gate // the first /start is slow
+        core.start(app, config(nativeCapture = true))
+        Robolectric.buildActivity(HomeActivity::class.java).setup()
+        val before = liveThreads()
+
+        core.startNewSession()
+        server.startGate = null
+        gate.countDown()
+        awaitSessions(1)
+        core.awaitStartQueue(10_000)
+        idleMain(1_000) // the capture timer runs
+
+        assertEquals("only the session still wanted goes live", 1, sessionsLive.get())
+        assertEquals("s2", core.sessionId)
+        core.stopAndWait(5_000)
+        assertTrue("the ended one recorded nothing", server.requests.none { it.auth == "Bearer tok1" })
+        waitUntil { threadsStartedSince(before).isEmpty() }
+        assertEquals("and left no threads running", emptyList<String>(), threadsStartedSince(before))
+    }
+
+    @Test
+    fun aStartThatFailsAfterARotationDoesNotLetTheLiveSessionBeReplaced() {
+        val gate = java.util.concurrent.CountDownLatch(1)
+        server.startGate = gate // the first /start is slow, then fails
+        server.failStarts.set(1)
+        core.start(app, config(nativeCapture = false))
+        Robolectric.buildActivity(HomeActivity::class.java).setup()
+        core.startNewSession()
+        server.startGate = null
+        gate.countDown()
+        awaitSessions(1)
+        core.awaitStartQueue(10_000)
+
+        // Replay.init again, as from an Activity a configuration change recreated.
+        core.start(app, config(nativeCapture = false))
+        core.awaitStartQueue(10_000)
+
+        assertEquals("the failure belonged to the ended session", 1, sessionsLive.get())
+        assertEquals("s1", core.sessionId)
+    }
+
     // ── Session end ──────────────────────────────────────────────────
 
     @Test
@@ -415,9 +507,14 @@ class ReplayCoreLifecycleTest {
         core.sendEvent("signed_out", "{}")
         server.failLate = true // offline when the session ends
 
-        core.stop()
+        // Wait for the failed send itself, not just its file: the file is
+        // written before the send, and going back online in between let the
+        // session end through after all.
+        val ended = java.util.concurrent.CountDownLatch(1)
+        core.stop { ended.countDown() }
+        assertTrue(ended.await(5, java.util.concurrent.TimeUnit.SECONDS))
         val lateDir = File(app.filesDir, "replayfy-late")
-        waitUntil { lateDir.listFiles().orEmpty().any { it.name.endsWith(".dat") } }
+        assertTrue("kept on disk", lateDir.listFiles().orEmpty().any { it.name.endsWith(".dat") })
         server.failLate = false
 
         // The next launch (a fresh engine in the same app sandbox).
@@ -487,6 +584,10 @@ class ReplayCoreLifecycleTest {
     }
 
     private fun shots(): MobileScreenshots = core.liveScreenshots ?: error("no live session")
+
+    /** Run the main looper's tasks (the capture timer) for [ms] of its clock. */
+    private fun idleMain(ms: Long) =
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(ms))
 
     /** A real 1×1 PNG, as Flutter's Dart-side capture would send. */
     private fun png(): ByteArray = java.util.Base64.getDecoder().decode(
