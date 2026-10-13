@@ -14,6 +14,8 @@ import com.replayfy.android.internal.crash.CrashHandler
 import com.replayfy.android.internal.crash.NativeCrashHandler
 import com.replayfy.android.internal.privacy.PrivacyRegistry
 import org.json.JSONObject
+import java.io.File
+import java.lang.ref.WeakReference
 import java.util.concurrent.Executors
 
 /**
@@ -25,7 +27,7 @@ import java.util.concurrent.Executors
  * and hand it to the collector. Screenshots flow independently to
  * /v1/mobile/images.
  */
-class ReplayCore private constructor() {
+class ReplayCore internal constructor() {
     companion object {
         @JvmStatic
         val shared = ReplayCore()
@@ -36,6 +38,9 @@ class ReplayCore private constructor() {
         @Volatile
         @JvmStatic
         var framework: String? = null
+
+        /** Under the app's filesDir: final batches waiting to be resent. */
+        private const val LATE_DIR = "replayfy-late"
     }
 
     private var transport: MobileTransport? = null
@@ -80,12 +85,43 @@ class ReplayCore private constructor() {
     // Whether the frame loop is paused BECAUSE of screen exclusion, so we only
     // pause/resume on an actual enter/leave transition.
     @Volatile private var framesExcluded = false
+    // The host paused frames (pauseRecording / optOutSchematicRecordings).
+    // Survives backgrounding and session rotation; a process restart resets it
+    // (the opt-out itself is persisted, and read back through optOutStore).
+    @Volatile private var hostPaused = false
+    @Volatile private var optOutStore: OptOutStore? = null
+    /** Frames must not be captured or accepted right now, for any reason. */
+    private val framesHeld: Boolean
+        get() = framesExcluded || hostPaused || optOutStore?.schematicOptOut == true
     // A manual Replay.tagScreenName takes precedence over the Activity/Fragment
     // auto-tag for the SAME screen (mirrors iOS + the autoScreenName doc
     // contract). Set by a manual tag, consumed by the next auto-tag emit so the
     // auto class name doesn't override it. Without this, "Menu" (manual) +
     // "MenuActivity" (auto) both fire and a name-based screen exclusion flaps.
     @Volatile private var manualTagPending = false
+    // The screen the last manual tag named for each live Activity: the one in
+    // front when it was tagged, or the one being created. A later resume of
+    // that Activity re-shows that screen (a return from the background, a
+    // dialog closing, a visit to another Activity), as does the instance a
+    // rotation recreates, so it is named again instead of auto-tagged:
+    // emitting the class name there un-excluded a manually tagged excluded
+    // screen. See nameResumedScreen. Guarded by its own monitor.
+    private val manualScreens = java.util.WeakHashMap<Activity, String>()
+    // A manual tag made while no Activity was in front (one being created, or
+    // recreated by a rotation): the next Activity to resume shows it.
+    @Volatile private var unclaimedManualScreen: String? = null
+    // The last screen sent as visible this session, so a re-shown manual
+    // screen is named again only when another screen came in between.
+    @Volatile private var lastScreen: String? = null
+    // The Activity currently resumed (null between one's pause and the next
+    // resume), and the Fragments whose next resume re-shows the screen they
+    // already showed rather than navigating: paused because their host paused,
+    // or restored with a host a rotation recreated.
+    @Volatile private var resumedActivity: WeakReference<Activity>? = null
+    private val fragmentsReshowing: MutableSet<Any> =
+        java.util.Collections.synchronizedSet(
+            java.util.Collections.newSetFromMap(java.util.WeakHashMap<Any, Boolean>()),
+        )
 
     // ── Short break ("allow another app briefly") ────────────────────
     // A background gap ≤ shortBreakWindowMs keeps the SAME session; a longer gap
@@ -96,13 +132,28 @@ class ReplayCore private constructor() {
     @Volatile private var allowShortBreak = true
     @Volatile private var shortBreakWindowMs = 1_800_000L
     @Volatile private var backgroundedAt = 0L
-    // App-level foreground counter (started Activities). Distinguishes a true
-    // background (count → 0) from an in-app Activity transition, so short-break
-    // rotation doesn't fire on ordinary navigation. Config changes (rotation)
-    // are excluded via isChangingConfigurations.
-    @Volatile private var startedActivityCount = 0
+    // The app's started (not yet stopped) Activities. Empty after a stop = the
+    // app went to the background, as opposed to an in-app Activity transition,
+    // so short-break rotation doesn't fire on ordinary navigation. Config
+    // changes (rotation) are excluded via isChangingConfigurations. The
+    // reference tracker counts started Activities the same way; a set instead
+    // of a count, because an Activity started before the engine was listening
+    // (a splash screen, with init in the next Activity's onCreate) stops
+    // without ever having been counted, and a count read that stop as "every
+    // Activity stopped" while the next one was in front.
+    private val startedActivities: MutableSet<Activity> =
+        java.util.Collections.synchronizedSet(
+            java.util.Collections.newSetFromMap(java.util.WeakHashMap<Activity, Boolean>()),
+        )
+    // The app is in the background: its last started Activity stopped (not for
+    // a config change). Cleared when an Activity starts again.
+    @Volatile private var inBackground = false
     // Lifecycle callbacks are registered once per process; kept across restarts.
     @Volatile private var callbacksRegistered = false
+    // Final (/late) batches an earlier launch could not deliver are looked for
+    // once per process (see resendLateMessages).
+    @Volatile private var lateChecked = false
+    @Volatile private var lateStore: MobileLateMessages? = null
 
     // ── Multi-session gate (record one session, or many) ─────────────
     // ENABLED → every rotation opens a session (default). NOT_STARTED → the
@@ -157,7 +208,11 @@ class ReplayCore private constructor() {
      */
     var externalPrivacyRectsProvider: () -> List<com.replayfy.android.MaskRect> = { emptyList() }
 
-    fun start(app: Application, config: ReplayConfig) {
+    fun start(app: Application, config: ReplayConfig) = start(app, config, keepScreenState = false)
+
+    /** [keepScreenState]: a session rotation (startNewSession) keeps the
+     *  exclusions set at runtime instead of re-seeding them from [config]. */
+    private fun start(app: Application, config: ReplayConfig, keepScreenState: Boolean) {
         // Idempotent: a second Replay.init (e.g. on an Activity recreate)
         // must not wire a second collector / screenshot timer / perf
         // sampler onto the same singleton.
@@ -165,7 +220,8 @@ class ReplayCore private constructor() {
         // GDPR: honour an overall opt-out on the LIVE engine — never open a
         // session while opted out (the legacy facade checked this; the live
         // engine didn't).
-        if (OptOutStore(app).overallOptOut) return
+        val optOut = OptOutStore(app)
+        if (optOut.overallOptOut) return
         // Multi-session gate — the single place a session opens. NOT_STARTED
         // allows exactly this one (then flips to DISABLED); DISABLED refuses.
         when (multiSessionState) {
@@ -174,12 +230,13 @@ class ReplayCore private constructor() {
             MultiSessionState.ENABLED -> {}
         }
         started = true
+        optOutStore = optOut
         val projectKey = config.apiKey
         val host = config.apiHost
         this.projectKey = projectKey
         this.host = host
         autoScreenName = config.autoScreenName
-        excludedScreens = config.excludedScreens.map { it.lowercase() }.toSet()
+        if (!keepScreenState) excludedScreens = config.excludedScreens.map { it.lowercase() }.toSet()
         application = app
         lastConfig = config
         // Register the lifecycle callbacks once per process — startNewSession
@@ -189,6 +246,18 @@ class ReplayCore private constructor() {
         if (!callbacksRegistered) {
             app.registerActivityLifecycleCallbacks(activityCallbacks)
             callbacksRegistered = true
+            // The callbacks don't replay what already happened. Count an
+            // Activity that is already on screen (React Native / Flutter boot
+            // from a method channel, after onResume) as started, so the app
+            // isn't taken for backgrounded until it stops too. Only a visible
+            // one: an init from onCreate/onStart still gets that Activity's
+            // own onStart through the callbacks.
+            resolveResumedActivity()
+                ?.takeIf { it.window?.peekDecorView()?.isAttachedToWindow == true }
+                ?.let {
+                    startedActivities.add(it)
+                    resumedActivity = WeakReference(it)
+                }
         }
         // registerActivityLifecycleCallbacks does NOT replay the resume that
         // already happened. A host that calls init() after its Activity is
@@ -203,6 +272,11 @@ class ReplayCore private constructor() {
         this.transport = transport
 
         startExecutor.execute {
+            val late = lateStore ?: MobileLateMessages(File(app.filesDir, LATE_DIR)).also { lateStore = it }
+            if (!lateChecked) {
+                lateChecked = true
+                resendLateMessages(late, transport)
+            }
             val resp = transport.start(deviceParams(app, projectKey)) ?: run {
                 started = false // allow a later retry if /start failed
                 return@execute
@@ -250,11 +324,13 @@ class ReplayCore private constructor() {
                     externalPrivacyRectsProvider()
             }
 
-            val collector = MobileCollector(transport)
+            val collector = MobileCollector(transport, late)
             val screenshots = MobileScreenshots(
                 transport,
                 activityProvider = { currentActivity },
                 privacyRects = { privacyRectsProvider() },
+                // Host-fed capture (Flutter) must never start the native timer.
+                nativeCapture = config.captureSnapshotPixels,
             ).apply { setSettings(resp.fps, resp.quality) }
             val touch = MobileTouchCapture { label, x, y, kind, direction ->
                 // kind ∈ tap / swipe / long_press — routed to click / swipe /
@@ -271,15 +347,23 @@ class ReplayCore private constructor() {
 
             collector.start()
             // captureSnapshotPixels=false → events only, no frames archive.
-            // Also honour an exclusion that fired BEFORE start() finished (an
-            // excluded screen tagged during the async /start round-trip) — don't
-            // start the loop yet; it resumes when a non-excluded screen shows.
-            if (config.captureSnapshotPixels && !framesExcluded) screenshots.start()
+            // Also honour a hold that started BEFORE start() finished (an
+            // excluded screen tagged during the async /start round-trip, a host
+            // pause, the schematic opt-out) or an app already backgrounded —
+            // don't start the loop yet; it resumes when nothing holds it.
+            if (config.captureSnapshotPixels && !framesHeld && !inBackground) screenshots.start()
             perf.start()
             // Flutter hosts pass captureTouch=false — the Dart layer reports
             // taps with the real widget label via reportInteraction (the native
-            // view tree only ever sees the one FlutterView).
-            if (config.captureTouch) currentActivity?.let { touch.attach(it) }
+            // view tree only ever sees the one FlutterView). Attached on the
+            // main thread: it reads the window's decor view (creating it if the
+            // Activity is still in onCreate, racing the main thread's own) and
+            // swaps the window callback.
+            if (config.captureTouch) {
+                currentActivity?.let { activity ->
+                    android.os.Handler(android.os.Looper.getMainLooper()).post { touch.attach(activity) }
+                }
+            }
             // Uncaught-exception crash reporting.
             if (config.captureErrors) {
                 // JVM crashes — disk-backed so the record survives the dying
@@ -343,13 +427,24 @@ class ReplayCore private constructor() {
         }
     }
 
-    fun stop() {
-        screenshots?.stop(); screenshots = null
+    /** End the session: stop capturing and send everything buffered — frames,
+     *  then the messages, whose last batch goes to /late (the server's
+     *  end-of-session signal). Both drains run on their own threads and finish
+     *  after the references are dropped here; [completion] runs once both have
+     *  settled. */
+    @JvmOverloads
+    fun stop(completion: (() -> Unit)? = null) {
+        val drains = java.util.concurrent.atomic.AtomicInteger(2)
+        val settled: () -> Unit = { if (drains.decrementAndGet() == 0) completion?.invoke() }
+        screenshots?.stop(settled) ?: settled()
+        screenshots = null
         perf?.stop(); perf = null
         consoleCapture?.stop(); consoleCapture = null
-        collector?.stop(); collector = null
+        collector?.stop(settled) ?: settled()
+        collector = null
         sessionId = null
         framesExcluded = false
+        lastScreen = null
         // Reset the run flags + drop buffered pre-start messages so a following
         // start() (startNewSession) actually opens a fresh session. The lifecycle
         // callbacks are registered once for the process (see callbacksRegistered)
@@ -357,6 +452,20 @@ class ReplayCore private constructor() {
         // fields, which start() repopulates.
         started = false
         synchronized(preStart) { preStart.clear(); ready = false }
+    }
+
+    /** [stop], then block for up to [timeoutMs] until the session's last frames
+     *  and messages have been sent (or, for the final message batch, kept on
+     *  disk for the next launch). For Replay.stopApplicationAndUploadData, just
+     *  before the host exits the process, which would kill the drains. */
+    fun stopAndWait(timeoutMs: Long) {
+        val done = java.util.concurrent.CountDownLatch(1)
+        stop { done.countDown() }
+        try {
+            done.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
     }
 
     /** Discard the current session WITHOUT uploading. Our engine streams
@@ -376,6 +485,7 @@ class ReplayCore private constructor() {
         collector?.discard(); collector = null
         sessionId = null
         framesExcluded = false
+        lastScreen = null
         started = false
         synchronized(preStart) { preStart.clear(); ready = false }
     }
@@ -402,16 +512,47 @@ class ReplayCore private constructor() {
     fun unexcludeScreen(name: String) { excludedScreens = excludedScreens - name.lowercase() }
 
     // ── Lifecycle controls (facade re-homes, #119) ───────────────────
-    /** Pause periodic screenshot capture; events keep flowing. */
-    fun pauseCapture() { screenshots?.pause() }
+    /** Host pause (pauseRecording / schematic opt-out): stop frames until
+     *  resumeCapture(); events keep flowing. Holds across background/foreground
+     *  and session rotation, and also stops host-fed (Flutter) frames. */
+    fun pauseCapture() {
+        hostPaused = true
+        screenshots?.pause()
+    }
 
-    /** Resume periodic screenshot capture. */
-    fun resumeCapture() { screenshots?.resume() }
+    /** Host resume. Frames restart unless something else still holds them (an
+     *  excluded screen in front, a persisted schematic opt-out) or the app is
+     *  in the background (onAppForeground resumes them). MobileScreenshots
+     *  restarts its timer only for native capture. */
+    fun resumeCapture() {
+        hostPaused = false
+        if (!framesHeld && !inBackground) screenshots?.resume()
+    }
+
+    /** Schematic opt-out (Replay.optOutSchematicRecordings): persisted, and
+     *  applied to the live engine like [pauseCapture] / [resumeCapture]. Not
+     *  the same hold: opting back in must not lift a pauseRecording still in
+     *  effect (a consent sync on every resume would restart frames on a PIN
+     *  screen). */
+    fun setSchematicOptOut(optOut: Boolean) {
+        val wasHeld = framesHeld
+        (optOutStore ?: application?.let { OptOutStore(it) })?.schematicOptOut = optOut
+        val held = framesHeld
+        // Transition-gated, so a repeated call doesn't flush partial archives.
+        if (held == wasHeld) return
+        if (held) screenshots?.pause() else if (!inBackground) screenshots?.resume()
+    }
 
     /** Ingest a Flutter Dart-side frame (PNG bytes) into the frames archive.
      *  Used when native capture is disabled for Flutter (Android's PixelCopy
      *  can't read the SurfaceView). */
     fun submitFrame(png: ByteArray, rects: List<com.replayfy.android.MaskRect>) {
+        // Host-fed frames obey the same holds as native capture: an excluded
+        // screen, pauseRecording and the schematic opt-out. Nor are they taken
+        // while the app is in the background: unlike iOS, Android keeps the
+        // process (and Flutter's capture timer) running there, and frames of
+        // a screen nobody sees only stretch the replay.
+        if (framesHeld || inBackground) return
         screenshots?.submitFrame(png, rects)
     }
 
@@ -423,13 +564,23 @@ class ReplayCore private constructor() {
     fun startNewSession() {
         val app = application ?: return
         val cfg = lastConfig ?: return
+        // A rotation doesn't change what is on screen: keep the exclusions set
+        // at runtime (start() would re-seed them from the config) and whether
+        // an excluded screen is in front, so its frames stay paused in the new
+        // session until the user leaves it.
+        val excluded = framesExcluded
         stop()
-        start(app, cfg)
+        framesExcluded = excluded
+        start(app, cfg, keepScreenState = true)
     }
 
     fun addVerificationListener(listener: Runnable) { verificationListeners.add(listener) }
 
     fun removeVerificationListener(listener: Runnable) { verificationListeners.remove(listener) }
+
+    /** The live session's frame buffer and message queue. For tests. */
+    internal val liveScreenshots: MobileScreenshots? get() = screenshots
+    internal val liveCollector: MobileCollector? get() = collector
 
     // ── Message API (called by listeners) ────────────────────────────
     /**
@@ -491,6 +642,12 @@ class ReplayCore private constructor() {
      *  suppressed until the next screen. Mirrors iOS's manual-tag precedence. */
     fun tagScreenManual(screenName: String) {
         manualTagPending = true
+        // The Activity in front shows the screen this names; while one is being
+        // created (none resumed yet) its upcoming resume claims it.
+        val activity = resumedActivity?.get()
+        synchronized(manualScreens) {
+            if (activity != null) manualScreens[activity] = screenName else unclaimedManualScreen = screenName
+        }
         sendScreen(screenName, screenName, true)
     }
 
@@ -501,14 +658,18 @@ class ReplayCore private constructor() {
         // don't churn on every tag). Everything else (this event, taps, network,
         // console, perf) keeps flowing. Only act on a screen becoming visible.
         if (!visible) return
+        lastScreen = screenName
         val excluded = excludedScreens.contains(screenName.lowercase())
         if (excluded != framesExcluded) {
             framesExcluded = excluded
+            // Not pauseCapture/resumeCapture: those are the host's own pause.
+            // Leaving an excluded screen doesn't restart frames a host pause or
+            // opt-out still holds, nor while the app is in the background.
             if (excluded) {
-                pauseCapture()
+                screenshots?.pause()
                 android.util.Log.i("ReplaySdk", "screen-exclude: PAUSED frames on '$screenName'")
-            } else {
-                resumeCapture()
+            } else if (!framesHeld && !inBackground) {
+                screenshots?.resume()
                 android.util.Log.i("ReplaySdk", "screen-exclude: RESUMED frames on '$screenName'")
             }
         }
@@ -564,68 +725,141 @@ class ReplayCore private constructor() {
     private val activityCallbacks = object : Application.ActivityLifecycleCallbacks {
         override fun onActivityResumed(activity: Activity) {
             currentActivity = activity
+            resumedActivity = WeakReference(activity)
             touch?.attach(activity)
-            // Resume screen capture on return to foreground — unless an excluded
-            // screen is (still) foreground; sendScreen re-evaluates exclusion.
-            if (!framesExcluded) screenshots?.resume()
             // Screen tracking → viewComponent message with the activity
-            // class name (drives the dashboard Screens tab + route). A manual
-            // tagScreenName in onCreate already named this screen → consume the
-            // flag and skip the auto class name so it doesn't override.
-            if (autoScreenName) {
-                if (manualTagPending) {
-                    manualTagPending = false
-                } else {
-                    val name = activity.javaClass.simpleName
-                    sendScreen(name, name, true)
-                }
-            }
+            // class name (drives the dashboard Screens tab + route).
+            nameResumedScreen(activity)
         }
         override fun onActivityPaused(activity: Activity) {
-            if (currentActivity === activity) {
-                sendPerformance("background", 1)
-                // Pause capture while backgrounded — shooting an invisible
-                // window just inflates the archive (and wastes storage +
-                // bandwidth). pause() flushes what's pending.
-                screenshots?.pause()
-                collector?.flush()
-            }
+            // Capture is no longer paused here: this fires on every Activity
+            // change and for a permission dialog, not just when the app goes
+            // to the background (see onAppBackground).
+            if (resumedActivity?.get() === activity) resumedActivity = null
         }
         override fun onActivityStarted(activity: Activity) {
-            // App-level foreground detection: count == 0 → 1 means the app
-            // returned from background (not an in-app Activity transition).
-            val wasBackground = startedActivityCount == 0
-            startedActivityCount++
-            if (wasBackground && backgroundedAt > 0L) {
-                val elapsed = System.currentTimeMillis() - backgroundedAt
-                backgroundedAt = 0L
-                // Short-break policy: a gap longer than the window (or short
-                // breaks disallowed) rotates to a fresh session so a long absence
-                // can't extend one session for hours. startNewSession() is gated
-                // by the multi-session state machine, so a disabled multi-session
-                // simply ends recording instead of rotating.
-                if (!allowShortBreak || elapsed > shortBreakWindowMs) {
-                    android.util.Log.i(
-                        "ReplaySdk",
-                        "short-break: gap ${elapsed / 1000}s > window ${shortBreakWindowMs / 1000}s — rotating session",
-                    )
-                    startNewSession()
-                }
+            // App-level foreground detection: the first Activity to start after
+            // the app went to the background (not an in-app Activity transition,
+            // and not the Activity a config change recreates).
+            startedActivities.add(activity)
+            if (inBackground) {
+                inBackground = false
+                onAppForeground()
             }
         }
         override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
             registerFragmentTracking(activity)
         }
         override fun onActivityStopped(activity: Activity) {
-            if (startedActivityCount > 0) startedActivityCount--
-            // App went to background (not a config change / rotation) → stamp the
-            // break start so onActivityStarted can size the gap on return.
-            if (startedActivityCount == 0 && !activity.isChangingConfigurations) {
-                backgroundedAt = System.currentTimeMillis()
+            startedActivities.remove(activity)
+            // App went to background (not a config change / rotation).
+            if (startedActivities.isEmpty() && !activity.isChangingConfigurations && !inBackground) {
+                onAppBackground()
             }
         }
         override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
-        override fun onActivityDestroyed(activity: Activity) {}
+        override fun onActivityDestroyed(activity: Activity) {
+            // A config change (rotation) recreates the Activity, and the new
+            // instance shows the same screen: it takes over the manual name.
+            if (!activity.isChangingConfigurations) return
+            synchronized(manualScreens) {
+                manualScreens.remove(activity)?.let { unclaimedManualScreen = it }
+            }
+        }
+    }
+
+    /** The app went to the background: its last started Activity stopped. */
+    private fun onAppBackground() {
+        inBackground = true
+        sendPerformance("background", 1)
+        // Stamp the break start so onAppForeground can size the gap.
+        backgroundedAt = System.currentTimeMillis()
+        // Upload everything buffered now. Frames upload only once a batch of 20
+        // fills, and the next flush may never come: the system can freeze a
+        // cached app (Android 11+) or kill its process soon after it leaves the
+        // screen. Unlike iOS, Android doesn't suspend the app the moment it
+        // backgrounds, so these drains (on the SDK's own threads, one request
+        // at a time) normally finish first; whatever doesn't get out stays
+        // queued and goes out on onAppForeground (nothing is discarded). A
+        // session end is covered on disk as well (MobileLateMessages). pause()
+        // also stops capture so we don't inflate the archive with
+        // invisible-window frames.
+        screenshots?.pause()
+        collector?.drain()
+    }
+
+    /** The app returned to the foreground. */
+    private fun onAppForeground() {
+        val elapsed = if (backgroundedAt > 0L) System.currentTimeMillis() - backgroundedAt else 0L
+        backgroundedAt = 0L
+        // Short-break policy: a gap longer than the window (or short breaks
+        // disallowed) rotates to a fresh session so a long absence can't extend
+        // one session for hours. startNewSession() is gated by the multi-session
+        // state machine, so a disabled multi-session simply ends recording
+        // instead of rotating.
+        if (!allowShortBreak || elapsed > shortBreakWindowMs) {
+            android.util.Log.i(
+                "ReplaySdk",
+                "short-break: gap ${elapsed / 1000}s > window ${shortBreakWindowMs / 1000}s — rotating session",
+            )
+            // The returning Activity's resume then names its screen in the new
+            // session (a manual name too, see nameResumedScreen).
+            startNewSession()
+            return
+        }
+        sendPerformance("background", 0)
+        // Push what the background could not get out (a frozen process's
+        // uploads fail on return) rather than waiting for the next full batch
+        // or timer tick. An excluded screen still in front keeps its frames
+        // paused, as does a host pause or opt-out; only leftovers go.
+        if (framesHeld) screenshots?.flush(all = true) else screenshots?.resume()
+        collector?.flush()
+    }
+
+    /**
+     * Name the screen [activity] shows as it resumes. A manual tagScreenName
+     * made while this Activity was being created, or while it was in front,
+     * names its screen until another screen is tagged in it: its later resumes
+     * re-show that same screen, so the manual name is sent again if another
+     * screen came in between (another Activity's, or a new session's first),
+     * never the class name. Emitting the class name there replaced the manual
+     * name and un-excluded a manually tagged excluded screen. Otherwise the
+     * class name, when automatic screen names are on.
+     */
+    private fun nameResumedScreen(activity: Activity) {
+        val manual = synchronized(manualScreens) {
+            unclaimedManualScreen?.let {
+                manualScreens[activity] = it
+                unclaimedManualScreen = null
+            }
+            manualScreens[activity]
+        }
+        manualTagPending = false
+        when {
+            manual == null -> if (autoScreenName) {
+                val name = activity.javaClass.simpleName
+                sendScreen(name, name, true)
+            }
+            manual != lastScreen -> sendScreen(manual, manual, true)
+        }
+    }
+
+    /** The manual name of the screen [activity] shows, if any. */
+    private fun manualScreenOf(activity: Activity): String? =
+        synchronized(manualScreens) { manualScreens[activity] }
+
+    /**
+     * Resend the batches an earlier launch could not deliver (the reference's
+     * late-messages file, see [MobileLateMessages]). Listed before this
+     * launch's first session can write its own; sent on their own thread so a
+     * slow network never delays /start, each under the token of the session
+     * it belongs to, as a plain batch (see [MobileTransport.sendSavedMessages]).
+     */
+    private fun resendLateMessages(store: MobileLateMessages, transport: MobileTransport) {
+        val files = store.pending()
+        if (files.isEmpty()) return
+        Thread({ store.resend(files) { batch, token -> transport.sendSavedMessages(batch, token) } }, "replay-late")
+            .start()
     }
 
     // ── Fragment screen tracking (androidx.fragment — compileOnly) ────
@@ -644,9 +878,25 @@ class ReplayCore private constructor() {
                 fm: androidx.fragment.app.FragmentManager,
                 f: androidx.fragment.app.Fragment,
             ) {
+                // Re-shown with its host Activity (a return from the background,
+                // a dialog closing, a rotation) while a manual tag names that
+                // Activity's screen: not a navigation, so the class name must
+                // not replace the manual one (see nameResumedScreen). A tag the
+                // Fragment just made for itself in onResume names that same
+                // screen, so it is spent here too; left pending, it swallowed
+                // the next Fragment's name.
+                val reshown = fragmentsReshowing.remove(f)
+                val host = f.activity
+                if (reshown && host != null && manualScreenOf(host) != null) {
+                    manualTagPending = false
+                    return
+                }
                 if (autoScreenName) {
                     if (manualTagPending) manualTagPending = false
-                    else { val n = f.javaClass.simpleName; sendScreen(n, n, true) }
+                    else {
+                        host?.let { synchronized(manualScreens) { manualScreens.remove(it) } }
+                        val n = f.javaClass.simpleName; sendScreen(n, n, true)
+                    }
                 }
             }
 
@@ -654,7 +904,27 @@ class ReplayCore private constructor() {
                 fm: androidx.fragment.app.FragmentManager,
                 f: androidx.fragment.app.Fragment,
             ) {
+                // The host's own onActivityPaused runs first, so a host that is
+                // no longer the resumed Activity means this Fragment paused with
+                // it, rather than being navigated away from.
+                val host = f.activity
+                if (host != null && resumedActivity?.get() !== host) fragmentsReshowing.add(f)
                 if (autoScreenName) { val n = f.javaClass.simpleName; sendScreen(n, n, false) }
+            }
+
+            override fun onFragmentCreated(
+                fm: androidx.fragment.app.FragmentManager,
+                f: androidx.fragment.app.Fragment,
+                savedInstanceState: Bundle?,
+            ) {
+                // Restored from saved state while its host is being recreated (a
+                // rotation): it shows the screen it showed before. Not one
+                // popped back later from the back stack, with its host in front:
+                // that is a navigation.
+                val host = f.activity
+                if (savedInstanceState != null && host != null && resumedActivity?.get() !== host) {
+                    fragmentsReshowing.add(f)
+                }
             }
         }
     }
@@ -699,7 +969,9 @@ class ReplayCore private constructor() {
         return JSONObject().apply {
             put("projectKey", projectKey)
             put("platform", "android")
-            put("trackerVersion", "2.0.0")
+            // The SDK's own release, so the dashboard shows which build a
+            // session came from (it was a constant "2.0.0" for every release).
+            put("trackerVersion", com.replayfy.android.BuildConfig.SDK_VERSION)
             framework?.takeIf { it.isNotEmpty() }?.let { put("framework", it) }
             put("revID", revID)
             put("appVersion", appVersion)

@@ -14,6 +14,9 @@ import android.view.PixelCopy
 import android.view.View
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 /**
  * Periodic screenshot capture → frames archive upload (mirrors iOS).
@@ -22,29 +25,72 @@ import java.util.concurrent.Executors
  * (PixelCopy on API 26+, Canvas draw fallback otherwise), downscales,
  * JPEG-compresses, accumulates, and uploads a gzipped frames archive
  * once `batchSize` frames are collected.
+ *
+ * [nativeCapture] is false for hosts that push their own frames through
+ * [submitFrame] (Flutter's Dart-side capture): the capture timer must then
+ * never run, including on resume.
  */
 class MobileScreenshots(
-    private val transport: MobileTransport,
+    private val transport: MobileUploading,
     private val activityProvider: () -> Activity?,
     private val privacyRects: () -> List<com.replayfy.android.MaskRect>,
+    private val nativeCapture: Boolean = true,
 ) {
     private val lock = Any()
     private val pending = ArrayList<Pair<ByteArray, Long>>()
-    private val main = Handler(Looper.getMainLooper())
+    // Lazy: a host-fed engine (Flutter) never captures natively, so it never
+    // needs the main-thread timer or the PixelCopy thread.
+    private val main by lazy { Handler(Looper.getMainLooper()) }
     private val sender = Executors.newSingleThreadExecutor()
-    private val pixelCopyThread = HandlerThread("replay-pixelcopy").apply { start() }
-    private val pixelCopyHandler = Handler(pixelCopyThread.looper)
+    private val pixelCopyHandler by lazy {
+        Handler(HandlerThread("replay-pixelcopy").apply { start() }.looper)
+    }
+    // Host-fed frames (submitFrame) decode here, one at a time in the order
+    // they were reported. Not on `sender`: there a decode waited behind an
+    // upload (up to a minute), so a pause decided what to send before frames
+    // reported earlier had even been buffered. Created on the first host
+    // frame; its thread exits when idle.
+    private val decoder = lazy {
+        ThreadPoolExecutor(1, 1, 10, TimeUnit.SECONDS, LinkedBlockingQueue()).apply { allowCoreThreadTimeOut(true) }
+    }
 
-    private var running = false
+    // Capture timer state, guarded by `lock`. Each start bumps the generation,
+    // so a tick chain from before a pause/resume ends itself instead of running
+    // alongside the new one (pause and resume can come from any thread).
+    private var capturing = false
+    private var timerGeneration = 0
+
+    // Upload drain state, guarded by `lock`. One drain runs at a time (on the
+    // single `sender` thread) so archives reach the server in capture order.
+    private var draining = false
+    /** Frames captured at or before this time go out even as a partial batch
+     *  (a pause, resume or stop asked for everything up to that moment);
+     *  later frames wait for a full batch. 0 = full batches only. */
+    private var flushThroughTs = 0L
+    private var roundsLeft = 0
+    /** A flush arrived while a round was in flight. If that round fails, the
+     *  request still gets its own attempt (a resume right after an upload the
+     *  background cut off must not be lost with it). */
+    private var requestedDuringRound = false
+    private val drainWaiters = ArrayList<() -> Unit>()
+    /** stop() or discard() ran: the capture timer must never start again. */
+    private var stopped = false
+    /** discard() ran: drop everything and send nothing more. */
+    private var discarded = false
+
     private var intervalMs = 333L      // 3 fps default
     private var jpegQuality = 50
     private val targetScale = 0.5f     // downscale to keep size down
     private val batchSize = 20
     private val maxBuffered = 500
+    /** Archives one drain may send. Bounds a drain whose buffer refills as
+     *  fast as it uploads, so it still ends. */
+    private val maxDrainRounds = 30
 
-    private val tick = object : Runnable {
+    private inner class Tick(private val generation: Int) : Runnable {
         override fun run() {
-            if (!running) return
+            val live = synchronized(lock) { capturing && generation == timerGeneration }
+            if (!live) return
             capture()
             main.postDelayed(this, intervalMs)
         }
@@ -59,54 +105,83 @@ class MobileScreenshots(
     }
 
     fun start() {
-        running = true
-        main.post(tick)
+        startTimer()
     }
 
     /** Feed an externally-captured frame (Flutter's Dart-side RepaintBoundary
      *  capture, since native PixelCopy can't read Flutter's SurfaceView) into
      *  the same encode → accumulate → upload pipeline. Decodes + re-encodes on
-     *  the sender thread so it never touches the main thread. [rects] are the
+     *  the decoder thread so it never touches the main thread. [rects] are the
      *  occlusion regions (developer `ReplayMask` bounds, in the PNG's pixel
      *  coords) the encoder masks — Flutter has no native view tree to mask. */
     fun submitFrame(png: ByteArray, rects: List<com.replayfy.android.MaskRect>) {
-        sender.execute {
+        // Stamped when reported, not when decoded: the frame shows the screen
+        // as of now, so a pause or stop that follows counts it among the frames
+        // captured before it.
+        val ts = System.currentTimeMillis()
+        decoder.value.execute {
+            if (synchronized(lock) { discarded }) return@execute
             val bmp = try {
                 android.graphics.BitmapFactory.decodeByteArray(png, 0, png.size)
             } catch (e: Throwable) { null } ?: return@execute
-            encode(bmp, rects)
+            encode(bmp, rects, ts)
         }
     }
 
-    fun stop() {
-        running = false
-        main.removeCallbacks(tick)
-        flush()
+    /** Session end: stop capturing and upload everything buffered.
+     *  [completion] runs once that upload settles. */
+    fun stop(completion: (() -> Unit)? = null) {
+        synchronized(lock) { stopped = true }
+        stopTimer()
+        flush(all = true, completion = completion)
     }
 
     /** Drop pending frames WITHOUT uploading — the cancelSession counterpart to
-     *  [stop] (which flushes). Stops the capture loop. */
+     *  [stop] (which flushes). Stops the capture loop. The buffer is cleared at
+     *  once, under the lock, so a running drain stops before its next round. */
     fun discard() {
-        running = false
-        main.removeCallbacks(tick)
-        synchronized(lock) { pending.clear() }
+        synchronized(lock) {
+            stopped = true
+            discarded = true
+            pending.clear()
+        }
+        stopTimer()
     }
 
-    /** Suspend capture while the app is backgrounded (no point shooting an
-     *  invisible window — it just inflates the archive). Flushes what's
-     *  pending so nothing is lost. */
-    fun pause() {
-        if (!running) return
-        running = false
-        main.removeCallbacks(tick)
-        flush()
+    /** Suspend capture (backgrounding, an excluded screen, a host pause) and
+     *  upload everything buffered — shooting an invisible window just inflates
+     *  the archive. Always flushes, even when the timer never ran: a host-fed
+     *  engine (Flutter) has frames buffered with no timer at all. Never
+     *  discards: frames that fail to send stay queued and go out on [resume].
+     *  [completion] runs once the uploads settle. */
+    fun pause(completion: (() -> Unit)? = null) {
+        stopTimer()
+        flush(all = true, completion = completion)
     }
 
-    /** Resume capture when the app returns to the foreground. */
+    /** Resume after [pause]. First push whatever the pause could not get out;
+     *  then restart the capture timer, but only when this engine screenshots
+     *  natively. Host-fed capture (Flutter) never starts the timer — doing so
+     *  began native screenshots after the first background, without the
+     *  host's occlusion rects. */
     fun resume() {
-        if (running) return
-        running = true
-        main.post(tick)
+        flush(all = true)
+        startTimer()
+    }
+
+    private fun startTimer() {
+        if (!nativeCapture) return
+        val generation = synchronized(lock) {
+            // A stop() before this resume must win.
+            if (stopped || capturing) return
+            capturing = true
+            ++timerGeneration
+        }
+        main.post(Tick(generation))
+    }
+
+    private fun stopTimer() {
+        synchronized(lock) { capturing = false }
     }
 
     private fun capture() {
@@ -181,7 +256,7 @@ class MobileScreenshots(
         }
     }
 
-    private fun encode(bmp: Bitmap, rects: List<com.replayfy.android.MaskRect>) {
+    private fun encode(bmp: Bitmap, rects: List<com.replayfy.android.MaskRect>, ts: Long = System.currentTimeMillis()) {
         try {
             val sw = (bmp.width * targetScale).toInt().coerceAtLeast(1)
             val sh = (bmp.height * targetScale).toInt().coerceAtLeast(1)
@@ -216,27 +291,146 @@ class MobileScreenshots(
             if (scaled != bmp) scaled.recycle()
             bmp.recycle()
 
-            val jpeg = out.toByteArray()
-            val ready: Boolean
-            synchronized(lock) {
-                pending.add(jpeg to System.currentTimeMillis())
-                if (pending.size > maxBuffered) pending.subList(0, pending.size - maxBuffered).clear()
-                ready = pending.size >= batchSize
-            }
-            if (ready) flush()
+            appendFrame(out.toByteArray(), ts)
         } catch (e: Throwable) { /* skip frame */ }
     }
 
-    fun flush() {
-        val frames: List<Pair<ByteArray, Long>>
+    /** Buffer one encoded frame; a full batch starts an upload. A frame that
+     *  lands after stop() (its capture was already in flight) goes straight
+     *  out: nothing will flush this session again. */
+    internal fun appendFrame(jpeg: ByteArray, ts: Long = System.currentTimeMillis()) {
+        val ready: Boolean
+        val ended: Boolean
         synchronized(lock) {
-            if (pending.isEmpty()) return
-            frames = ArrayList(pending); pending.clear()
+            if (discarded) return
+            pending.add(jpeg to ts)
+            if (pending.size > maxBuffered) pending.subList(0, pending.size - maxBuffered).clear()
+            ended = stopped
+            ready = ended || pending.size >= batchSize
         }
-        sender.execute {
-            val archive = MobileFrames.archive(frames) ?: return@execute
-            val ok = transport.sendImages(archive)
-            if (!ok) synchronized(lock) { pending.addAll(0, frames) }
+        // Already buffered, so no need to wait for frames still decoding.
+        if (ready) requestDrain(throughTs = if (ended) System.currentTimeMillis() else 0L, completion = null)
+    }
+
+    /**
+     * Upload buffered frames oldest first, one archive of at most `batchSize`
+     * frames per request. `all = false` (a batch just filled) sends full
+     * batches only. `all = true` (pause, resume, stop) also sends a partial
+     * batch of the frames captured up to now; frames captured afterwards keep
+     * filling a batch. A failed upload puts its frames back at the front and
+     * ends the drain, so nothing is dropped and a retry can't spin.
+     * [completion] runs once the drain settles.
+     */
+    fun flush(all: Boolean = false, completion: (() -> Unit)? = null) {
+        if (!all) return requestDrain(throughTs = 0L, completion = completion)
+        val through = System.currentTimeMillis()
+        // Host frames reported before this call may still be decoding. Queue
+        // the request behind them so it covers them, and its completion (a
+        // stop the host waits on before exiting) waits for them too.
+        if (decoder.isInitialized()) {
+            decoder.value.execute { requestDrain(through, completion) }
+        } else {
+            requestDrain(through, completion)
         }
     }
+
+    /** Start a drain, or widen the running one. [throughTs] > 0 also sends
+     *  the frames captured up to that time as a partial batch. */
+    private fun requestDrain(throughTs: Long, completion: (() -> Unit)?) {
+        val all = throughTs > 0L
+        val startDrain = synchronized(lock) {
+            if (discarded) {
+                false
+            } else {
+                if (all) {
+                    flushThroughTs = maxOf(flushThroughTs, throughTs)
+                    roundsLeft = maxDrainRounds
+                }
+                completion?.let { drainWaiters.add(it) }
+                if (draining) {
+                    // The running drain picks up the new frames, the wider scope
+                    // and the waiter. A pause/resume/stop request also earns its
+                    // own attempt if the in-flight round fails.
+                    if (all) requestedDuringRound = true
+                    return
+                }
+                draining = true
+                if (!all) roundsLeft = maxDrainRounds
+                true
+            }
+        }
+        if (startDrain) sender.execute { drainLoop() } else completion?.let { runWaiters(listOf(it)) }
+    }
+
+    /** The drain, one archive per round on the `sender` thread. The queued
+     *  task holds `this`, so the drain finishes sending the session's last
+     *  frames after ReplayCore releases this object on stop(). */
+    private fun drainLoop() {
+        while (true) {
+            var frames: List<Pair<ByteArray, Long>> = emptyList()
+            var done: List<() -> Unit>? = null
+            synchronized(lock) {
+                val forced = pending.firstOrNull()?.let { it.second <= flushThroughTs } ?: false
+                if (discarded || roundsLeft <= 0 || pending.isEmpty() || !(forced || pending.size >= batchSize)) {
+                    done = endDrainLocked()
+                } else {
+                    roundsLeft--
+                    requestedDuringRound = false
+                    val head = pending.subList(0, minOf(batchSize, pending.size))
+                    frames = ArrayList(head)
+                    head.clear()
+                }
+            }
+            done?.let { return runWaiters(it) }
+
+            // Compression failed: skip this batch rather than retry it forever.
+            val archive = MobileFrames.archive(frames) ?: continue
+            val ok = try { transport.sendImages(archive) } catch (_: Throwable) { false }
+            if (ok) continue
+
+            var retry = false
+            synchronized(lock) {
+                if (discarded) {
+                    done = endDrainLocked()
+                } else {
+                    pending.addAll(0, frames)
+                    if (pending.size > maxBuffered) pending.subList(0, pending.size - maxBuffered).clear()
+                    // Someone asked for a flush while this upload was in flight:
+                    // give that request its own attempt.
+                    if (requestedDuringRound) retry = true else done = endDrainLocked()
+                }
+            }
+            if (retry) continue
+            done?.let { return runWaiters(it) }
+        }
+    }
+
+    /** Ends the drain and hands back its waiters. Call with `lock` held, in the
+     *  same hold as the check that ended it, so a flush that arrives in
+     *  between can't be dropped; run the waiters after releasing. */
+    private fun endDrainLocked(): List<() -> Unit> {
+        val waiters = ArrayList(drainWaiters)
+        drainWaiters.clear()
+        draining = false
+        flushThroughTs = 0L
+        roundsLeft = 0
+        requestedDuringRound = false
+        return waiters
+    }
+
+    private fun runWaiters(waiters: List<() -> Unit>) {
+        waiters.forEach { runCatching { it() } }
+    }
+
+    /** Frames waiting to upload. For tests. */
+    internal val pendingCount: Int
+        get() = synchronized(lock) { pending.size }
+
+    /** Whether the native capture timer is running. For tests. */
+    internal val isCapturing: Boolean
+        get() = synchronized(lock) { capturing }
+
+    /** Whether an upload drain is running. For tests. */
+    internal val isDraining: Boolean
+        get() = synchronized(lock) { draining }
 }

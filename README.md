@@ -227,8 +227,11 @@ You can also exclude a screen from recording by name. While an excluded screen
 is in the foreground the periodic frame capture pauses (taps, network, console,
 and performance events keep flowing); it resumes on the next non-excluded
 screen. Matching is case-insensitive against the auto-tagged / `tagScreenName`
-name. This is distinct from `occludeSensitiveScreen` (which keeps recording but
-blanks the frame) — an excluded screen captures no frames at all. Seed the
+name. A `tagScreenName` name stays the name of its Activity's screen when that
+Activity comes back (from the background, from another Activity, or after a
+rotation), so a screen excluded by its tagged name stays excluded. This is
+distinct from `occludeSensitiveScreen` (which keeps recording but blanks the
+frame) — an excluded screen captures no frames at all. Seed the
 initial denylist at start via `ReplayConfig(excludedScreens = ...)`, or change it
 at runtime:
 
@@ -295,7 +298,8 @@ Replay.setMultiSessionRecord(false)         // record only one session per app l
 | Method | Description |
 |---|---|
 | `isRecording()` | Whether the SDK is currently recording. |
-| `pauseRecording()` / `resumeRecording()` | Pause/resume screen capture while keeping the interaction timeline. |
+| `pauseRecording()` / `resumeRecording()` | Pause/resume screen capture while keeping the interaction timeline. The pause holds across background/foreground and session rotation until you resume. |
+| `optOutSchematicRecordings(optOut)` / `isOptedOutSchematicRecordings()` | Durable (persisted) frame opt-out: no frames are captured or uploaded while opted out; every other event keeps flowing. Independent of `pauseRecording()`: opting back in doesn't lift a pause still in effect. |
 | `startNewSession()` | Force-end the current session and start a new one (logout/login, re-bucketing). |
 | `stop()` | End the current session and flush the buffered batch. The next foregrounding starts a fresh session. |
 | `cancelSession()` | Discard the current session without uploading — the server drops whatever already streamed. A fresh session can start afterward. |
@@ -343,7 +347,6 @@ Replay.setBlurDownscale(12)                        // stronger blur = larger fac
 
 _Some forward-compatibility methods are present on the public surface but not
 yet active in this release — calling them today is safe but has no effect:
-`optOutSchematicRecordings()` / `isOptedOutSchematicRecordings()` and
 `urlForCurrentSession()` / `urlForCurrentUser()`._
 
 Licensed under the [BSD-3-Clause License](./LICENSE).

@@ -10,6 +10,13 @@ plugins {
     id("com.vanniktech.maven.publish") version "0.30.0"
 }
 
+// One version for the published coordinate AND BuildConfig.SDK_VERSION (sent as
+// the session's trackerVersion), so the two can't drift. CI's publish passes
+// -PpublishVersion=<tag>. The default (local and JitPack builds, which pass
+// nothing) is the release this tree is heading for, so its sessions aren't
+// reported as the release before it: bump it right after cutting a release.
+val sdkVersion = (project.findProperty("publishVersion") as String?) ?: "0.0.5"
+
 android {
     namespace = "com.replayfy.android"
     // minSdk 21 matches the reference mobile SDK's floor and covers >99% of active devices.
@@ -29,9 +36,8 @@ android {
         // published AAR). Used by the privacy-masking on-device test.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // SDK version baked into the user-agent the host app sends with
-        // every batch. Bump in tandem with git tags.
-        buildConfigField("String", "SDK_VERSION", "\"0.0.4\"")
+        // SDK version reported on every session (/start trackerVersion).
+        buildConfigField("String", "SDK_VERSION", "\"$sdkVersion\"")
         buildConfigField("String", "SDK_NAME", "\"@replay/android-sdk\"")
 
         consumerProguardFiles("consumer-rules.pro")
@@ -133,7 +139,7 @@ mavenPublishing {
     coordinates(
         (project.findProperty("publishGroupId") as String?) ?: "com.github.replayfy",
         "android-sdk",
-        (project.findProperty("publishVersion") as String?) ?: "0.0.4",
+        sdkVersion,
     )
     pom {
         name.set("Replayfy Android SDK")
@@ -194,6 +200,15 @@ dependencies {
     // compileOnly: apps that use Fragments already ship this; apps that don't
     // never load the class (the tracker guards every use), so we don't force it.
     compileOnly("androidx.fragment:fragment:1.6.2")
+
+    // JVM unit tests (development only — never in the published AAR). The
+    // engine's upload drains run against a fake transport; Robolectric gives
+    // the lifecycle tests a real Application, Activities and main Looper.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.5.0")
+    // compileOnly above; the Fragment screen-tracking tests need it at runtime.
+    testImplementation("androidx.fragment:fragment:1.6.2")
 
     // Instrumented tests (development only — stripped from the published
     // AAR). Drive the privacy-masking on-device verification.
