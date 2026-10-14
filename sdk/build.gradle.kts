@@ -15,7 +15,7 @@ plugins {
 // -PpublishVersion=<tag>. The default (local and JitPack builds, which pass
 // nothing) is the release this tree is heading for, so its sessions aren't
 // reported as the release before it: bump it right after cutting a release.
-val sdkVersion = (project.findProperty("publishVersion") as String?) ?: "0.0.6"
+val sdkVersion = (project.findProperty("publishVersion") as String?) ?: "0.0.7"
 
 android {
     namespace = "com.replayfy.android"

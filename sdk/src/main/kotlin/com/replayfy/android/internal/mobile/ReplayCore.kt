@@ -315,6 +315,12 @@ class ReplayCore internal constructor() {
                 // config still applies when the server is silent).
                 captureNetworkHeaders = resp.captureNetworkHeaders ?: config.captureHeaders
                 captureNetworkBodies = resp.captureNetworkBodies ?: config.captureBodies
+                // The dashboard's "always mask input values". Set before the
+                // screenshotter exists, so the first frame is already covered;
+                // a /start without it clears it (switched off on the
+                // dashboard). Its own flag, OR-ed with the app's
+                // occludeAllTextFields: the dashboard can only add masking.
+                PrivacyRegistry.remoteOccludeAllTextFields = resp.occludeAllTextFields ?: false
 
                 // Wire screenshot privacy masking to the PrivacyRegistry — the
                 // same collectors the legacy capture path consults. Without this
@@ -327,19 +333,26 @@ class ReplayCore internal constructor() {
                     val root = currentActivity?.window?.decorView ?: return@provider emptyList()
                     val style = PrivacyRegistry.maskStyle
                     if (PrivacyRegistry.occludeAllScreen) {
-                        // Whole-screen occlude (occludeSensitiveScreen): one box over
-                        // the whole decor view. Drain any pending bridge rects so they
-                        // don't bleed into a later non-full-screen frame.
+                        // Whole-screen occlude (occludeSensitiveScreen): one solid box
+                        // over the whole decor view, whatever the global style (the
+                        // reference tracker paints it opaque). Drain any pending
+                        // bridge rects so they don't bleed into a later
+                        // non-full-screen frame.
                         PrivacyRegistry.consumePendingFrameRects()
                         return@provider listOf(
-                            com.replayfy.android.MaskRect(Rect(0, 0, root.width, root.height), style))
+                            com.replayfy.android.MaskRect(
+                                Rect(0, 0, root.width, root.height),
+                                com.replayfy.android.ReplayMaskStyle.OVERLAY,
+                            ),
+                        )
                     }
-                    // Native/bulk sources render with the global style; the bridge
-                    // rects (React Native / Flutter) carry their own per-region style.
-                    (PrivacyRegistry.sensitiveBounds(root) +
-                        PrivacyRegistry.bulkBounds(root) +
-                        PrivacyRegistry.composeBoundsRelativeTo(root))
-                        .map { com.replayfy.android.MaskRect(it, style) } +
+                    // Native sources render with the global style, except the
+                    // auto-masked fields, which bulkMaskRects always paints solid;
+                    // the bridge rects (React Native / Flutter) carry their own
+                    // per-region style.
+                    PrivacyRegistry.sensitiveBounds(root).map { com.replayfy.android.MaskRect(it, style) } +
+                        PrivacyRegistry.bulkMaskRects(root, style) +
+                        PrivacyRegistry.composeBoundsRelativeTo(root).map { com.replayfy.android.MaskRect(it, style) } +
                         PrivacyRegistry.consumePendingFrameRects() +
                         externalPrivacyRectsProvider()
                 }
@@ -594,7 +607,16 @@ class ReplayCore internal constructor() {
         // process (and Flutter's capture timer) running there, and frames of
         // a screen nobody sees only stretch the replay.
         if (framesHeld || inBackground) return
-        screenshots?.submitFrame(png, rects)
+        val shots = screenshots ?: return
+        // The native guards apply to host frames too, whatever rects the host
+        // sent: a FLAG_SECURE window records black, as native frames do, and
+        // occludeSensitiveScreen replaces the frame with one solid box.
+        val cover = when {
+            PrivacyRegistry.isSecureWindow(currentActivity?.window) -> android.graphics.Color.BLACK
+            PrivacyRegistry.occludeAllScreen -> MobileScreenshots.MASK_COLOR
+            else -> null
+        }
+        shots.submitFrame(png, rects, cover)
     }
 
     /** Toggle auto screen-name tagging (Activity lifecycle) at runtime. */

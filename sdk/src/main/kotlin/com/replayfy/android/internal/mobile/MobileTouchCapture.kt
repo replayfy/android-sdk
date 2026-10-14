@@ -8,6 +8,7 @@ import android.view.Window
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import com.replayfy.android.internal.privacy.PrivacyRegistry
 import java.lang.ref.WeakReference
 import kotlin.math.PI
 import kotlin.math.abs
@@ -113,8 +114,9 @@ class MobileTouchCapture(
                 // label, instead of the hard-coded "View".
                 val hit = root?.get()?.let { findViewAtPosition(it, ev.rawX, ev.rawY) }
                 // Drop taps on framework/system hosts (FlutterSurfaceView, …) —
-                // extractElementLabel returns null for those.
-                val label = extractElementLabel(hit) ?: return
+                // extractElementLabel returns null for those. ev.x/ev.y are
+                // window coordinates (a Window.Callback sees the window's events).
+                val label = extractElementLabel(hit, ev.x, ev.y) ?: return
                 onGesture(label, x, y, kind, direction(dx, dy))
             }
             MotionEvent.ACTION_CANCEL -> { pinchTracking = false; gestureConsumed = false }
@@ -147,7 +149,7 @@ class MobileTouchCapture(
         while (angleDelta < -PI) angleDelta += (2 * PI).toFloat()
 
         val hit = root?.get()?.let { findViewAtPosition(it, pinchRawCenterX, pinchRawCenterY) }
-        val label = extractElementLabel(hit) ?: "view"
+        val label = extractElementLabel(hit, pinchCenterX, pinchCenterY) ?: "view"
         val x = pinchCenterX.coerceAtLeast(0f).toLong()
         val y = pinchCenterY.coerceAtLeast(0f).toLong()
         // Pinch when separation changed ≥15%; rotate when the line between the
@@ -193,8 +195,15 @@ class MobileTouchCapture(
      * text → contentDescription → class name. `contentDescription` is where
      * React Native's `accessibilityLabel` lands on Android. EditText uses its
      * hint, never the typed value (privacy).
+     *
+     * A view masked in the frames (see [PrivacyRegistry.isSensitive], or a
+     * Compose `replayOcclude` region under the touch at window coordinates
+     * [xInWindow], [yInWindow]) never names a tap with what it shows: no text,
+     * no contentDescription, only the resource-id or class name. The
+     * reference tracker never names a gesture from an occluded view's text
+     * either.
      */
-    private fun extractElementLabel(view: View?): String? {
+    private fun extractElementLabel(view: View?, xInWindow: Float, yInWindow: Float): String? {
         if (view == null) return "View"
         try {
             if (view.id != View.NO_ID) {
@@ -202,19 +211,27 @@ class MobileTouchCapture(
                 if (name.isNotBlank()) return name
             }
         } catch (_: Throwable) { /* unknown resource id */ }
-        try {
-            val text = when (view) {
-                is EditText -> view.hint?.toString()
-                is TextView -> view.text?.toString()
-                is Button -> view.text?.toString()
-                else -> null
-            }
-            if (!text.isNullOrBlank()) return text.trim().replace("\n", " ").take(50)
-        } catch (_: Throwable) { /* ignore */ }
-        try {
-            val desc = view.contentDescription?.toString()
-            if (!desc.isNullOrBlank()) return desc.trim().replace("\n", " ").take(50)
-        } catch (_: Throwable) { /* ignore */ }
+        val masked = try {
+            PrivacyRegistry.isSensitive(view) ||
+                PrivacyRegistry.isSensitiveAtPoint(xInWindow.toInt(), yInWindow.toInt())
+        } catch (_: Throwable) {
+            true // can't tell: never risk the text
+        }
+        if (!masked) {
+            try {
+                val text = when (view) {
+                    is EditText -> view.hint?.toString()
+                    is TextView -> view.text?.toString()
+                    is Button -> view.text?.toString()
+                    else -> null
+                }
+                if (!text.isNullOrBlank()) return text.trim().replace("\n", " ").take(50)
+            } catch (_: Throwable) { /* ignore */ }
+            try {
+                val desc = view.contentDescription?.toString()
+                if (!desc.isNullOrBlank()) return desc.trim().replace("\n", " ").take(50)
+            } catch (_: Throwable) { /* ignore */ }
+        }
         // Class-name fallback — but drop framework/system hosts whose taps are
         // noise, not app interactions (returns null → the gesture is skipped).
         val cls = try { view.javaClass.simpleName } catch (_: Throwable) { "" }

@@ -20,8 +20,9 @@ happened.
   state, captured automatically.
 - **Network capture** — opt-in HTTP request/response logging via a drop-in
   OkHttp interceptor.
-- **Privacy first** — per-view, per-class, and whole-screen masking; password
-  fields and sensitive inputs are redacted on-device before anything is sent.
+- **Privacy first** — per-view, per-class, and whole-screen masking; password,
+  card and one-time-code fields and `FLAG_SECURE` screens are redacted
+  on-device before anything is sent.
 - **Zero-config start** — one `init` call wires recording, tap capture, screen
   detection, crash handling, and performance monitoring. No manifest changes.
 
@@ -33,7 +34,7 @@ your app module's **`build.gradle.kts`**:
 
 ```kotlin
 dependencies {
-    implementation("app.replayfy:android-sdk:0.0.6")
+    implementation("app.replayfy:android-sdk:0.0.7")
 }
 ```
 
@@ -72,7 +73,7 @@ JitPack's group:
 
 ```kotlin
 dependencies {
-    implementation("com.github.replayfy:android-sdk:0.0.6")
+    implementation("com.github.replayfy:android-sdk:0.0.7")
 }
 ```
 </details>
@@ -265,17 +266,19 @@ Replay.setExcludedScreens(listOf("PinEntry", "Paywall"))  // replace the whole d
 ### Text input tracking
 
 Input capture is opt-in per field — never global. Values are recorded on
-focus-loss (not per keystroke), and password-type fields report `"***"`.
+focus-loss (not per keystroke), and every field masked in the recording
+(password, card and one-time-code fields, `occludeAllTextFields`, privacy
+views, secure windows) reports `"***"`, never its text.
 
 ```kotlin
 Replay.addObservedInput(emailEditText)
-Replay.addObservedInput(passwordEditText)                     // password inputType → "***"
+Replay.addObservedInput(passwordEditText)                     // masked field → "***"
 Replay.trackInput(label = "Coupon", value = code, masked = false)  // for non-EditText values
 ```
 
 | Method | Description |
 |---|---|
-| `addObservedInput(editText)` | Record an `EditText`'s value on focus-loss (passwords auto-masked). |
+| `addObservedInput(editText)` | Record an `EditText`'s value on focus-loss (masked fields send `"***"`). |
 | `trackInput(label, value, masked)` | Record a value not backed by an `EditText` (Compose/custom); `masked = true` sends `"***"`. |
 
 ### Network capture
@@ -323,8 +326,26 @@ Replay.setMultiSessionRecord(false)         // record only one session per app l
 
 ## Privacy & masking
 
-All masking happens on-device before anything is uploaded. Password fields are
-masked automatically; everything else is opt-in.
+All masking happens on-device before anything is uploaded. These are masked
+automatically, always as a solid box, with no setup:
+
+- password fields (any password input type, or a password transformation),
+  including while "show password" is on;
+- card fields, by autofill hint: `creditCardNumber`, `creditCardSecurityCode`,
+  `creditCardExpirationDate`, `creditCardExpirationMonth`,
+  `creditCardExpirationYear`;
+- one-time-code fields: any autofill hint containing `otp` (e.g. `smsOTPCode`);
+- every screen of a `FLAG_SECURE` window, recorded as a black frame (the window
+  is never copied or drawn).
+
+Everything else is opt-in. The dashboard's "Always mask input values" setting
+masks every `EditText` from the next session start, on top of what the app
+sets: `occludeAllTextFields(false)` doesn't undo it. Taps on a masked view are
+labelled by resource id or class name, never by the text it shows.
+
+Jetpack Compose text fields are not detected automatically. Mark secure
+Compose fields (passwords, card numbers, codes) with `Modifier.replayOcclude()`
+from the `sdk-compose` module.
 
 ```kotlin
 Replay.addPrivacyView(cardNumberField)             // mask one view (and its children)
@@ -334,20 +355,20 @@ Replay.occludeAllTextFields(true)                  // mask every EditText
 Replay.occludeAllTextView(true)                    // mask every TextView / Button
 Replay.applyOcclusion(CreditCardView::class.java)  // mask all instances of a view class
 Replay.removeOcclusion(CreditCardView::class.java)
-Replay.occludeSensitiveScreen(true)                // mask the entire screen
+Replay.occludeSensitiveScreen(true)                // cover the entire screen (always solid)
 
-Replay.setMaskStyle(ReplayMaskStyle.BLUR)          // BLUR (default) or OVERLAY
+Replay.setMaskStyle(ReplayMaskStyle.BLUR)          // OVERLAY (default, solid), BLUR or PIXELATE
 Replay.setBlurDownscale(12)                        // stronger blur = larger factor
 ```
 
 | Method | Description |
 |---|---|
 | `addPrivacyView(view)` / `removePrivacyView(view)` | Mask a single view (marks propagate to descendants). |
-| `occludeAllTextFields(occlude)` | Mask every `EditText` in the app. |
+| `occludeAllTextFields(occlude)` | Mask every `EditText` in the app (the dashboard can also force this on). |
 | `occludeAllTextView(occlude)` | Mask every `TextView` / `Button` (anything showing text). |
 | `applyOcclusion(viewClass)` / `removeOcclusion(viewClass)` | Mask every instance of a custom view class. |
-| `occludeSensitiveScreen(occlude)` | Mask the entire captured screen. |
-| `setMaskStyle(style)` | Default masking style — `ReplayMaskStyle.BLUR` or `ReplayMaskStyle.OVERLAY`. |
+| `occludeSensitiveScreen(occlude)` | Cover the entire captured screen with one solid box. |
+| `setMaskStyle(style)` | Default masking style — `ReplayMaskStyle.OVERLAY` (default, a solid box), `BLUR` or `PIXELATE`. Automatically masked fields, the whole-screen cover and secure screens are always solid. |
 | `setBlurDownscale(factor)` | Blur strength for `BLUR` regions (default 12; higher = stronger). |
 
 ## Links

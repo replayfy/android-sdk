@@ -28,6 +28,8 @@ internal class FakeIngestServer : AutoCloseable {
     @Volatile var startGate: java.util.concurrent.CountDownLatch? = null
     /** Answer this many of the next /start requests with a 500. */
     val failStarts = AtomicInteger()
+    /** JSON sent as `privacy` in the /start response; none while null. */
+    @Volatile var startPrivacy: String? = null
 
     private val sessions = AtomicInteger()
     private val socket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
@@ -77,8 +79,9 @@ internal class FakeIngestServer : AutoCloseable {
             failed -> 500 to "{}"
             path == "/v1/mobile/start" -> {
                 val n = sessions.incrementAndGet()
+                val privacy = startPrivacy?.let { ""","privacy":$it""" } ?: ""
                 200 to """{"ok":true,"data":{"token":"tok$n","sessionID":"s$n","fps":3,""" +
-                    """"quality":"low","framesSupport":true,"projectID":"p","userUUID":"u"}}"""
+                    """"quality":"low","framesSupport":true,"projectID":"p","userUUID":"u"$privacy}}"""
             }
             else -> 200 to "{}"
         }

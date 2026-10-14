@@ -3,6 +3,70 @@
 All notable changes to the Replayfy Android SDK are documented here. This
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.7] - 2026-10-14
+
+Masking that matches the reference SDKs' defaults, and fixes for text that
+could reach a recording around a mask.
+
+### Changed
+
+- **Screens of a `FLAG_SECURE` window record as black frames.** The SDK no
+  longer copies or draws a secure window at all; it encodes a solid black frame
+  of the same size instead. Before, a secure window's content could reach the
+  recording through PixelCopy or through the software-draw fallback, which
+  ignores `FLAG_SECURE`. Frames that a host SDK reports (`Replay.reportFrame`,
+  used by the Flutter SDK) are blacked out the same way while the Activity's
+  window is secure. Apps that set `FLAG_SECURE` will see black frames for those
+  screens in their replays.
+- **Masks are solid by default.** The default mask style is now
+  `ReplayMaskStyle.OVERLAY` (a solid box), as both reference SDKs paint masks
+  opaque; it was `BLUR`. `Replay.setMaskStyle(ReplayMaskStyle.BLUR)` brings the
+  blur back for `addPrivacyView`, `occludeAllTextFields`, `occludeAllTextView`,
+  `applyOcclusion`, Compose `replayOcclude` and `occludeRectsOnNextFrame`.
+  Automatically masked fields, the whole-screen cover and `FLAG_SECURE` frames
+  are always solid.
+- **More fields are masked automatically**, with no setup, always as a solid
+  box:
+  - password fields whatever extra input-type flags they carry (for example
+    `textPassword|textNoSuggestions`), and fields that only use a password
+    transformation. A password field with "show password" on stays masked;
+  - card fields, by autofill hint: `creditCardNumber`,
+    `creditCardSecurityCode`, `creditCardExpirationDate`,
+    `creditCardExpirationMonth` and `creditCardExpirationYear`;
+  - one-time-code fields: any autofill hint containing `otp` (for example
+    `smsOTPCode`).
+  There is no limit on how many fields one screen masks.
+- **The dashboard's "Always mask input values" now applies to Android
+  sessions.** When it is on, every `EditText` is masked, as with
+  `occludeAllTextFields(true)`, from the next session start. It adds to the
+  app's own setting: `occludeAllTextFields(false)` doesn't undo it, and turning
+  it off on the dashboard never unmasks what the app masks.
+- `occludeSensitiveScreen(true)` always covers the frame with one solid box,
+  whatever `setMaskStyle` says, and now also covers frames a host SDK reports
+  (Flutter), which it left untouched before.
+
+### Fixed
+
+- Masks follow what a view actually shows: its visible, clipped and transformed
+  bounds. A view scaled up (an animation, a React Native transform) was masked
+  at its smaller layout size, leaving its edges uncovered; a field partly
+  scrolled out of view is now masked only where it shows.
+- Jetpack Compose `replayOcclude` masks could land off target in split-screen
+  and floating windows: they were offset by the window's position on screen.
+- Mask edges are rounded outward when a frame is scaled down, so a blended edge
+  pixel of masked content no longer survives at the border of a mask.
+- `addObservedInput` reports `"***"` for every field masked in the recording:
+  password, card and one-time-code fields, `occludeAllTextFields` (the app's or
+  the dashboard's), privacy views and classes, the whole-screen cover and secure
+  windows. Before, only a few exact password input types were masked, so a
+  `textPassword|textNoSuggestions` field or a field under
+  `occludeAllTextFields` sent its typed text.
+- A tap on a masked view is no longer named after what the view shows. It used
+  to send up to 50 characters of the view's text (a card number in a privacy
+  view, text under `occludeAllTextView`, a React Native `<Text>` inside
+  `<ReplayMask>`). Taps on masked views, under a Compose `replayOcclude` region
+  or on a secure window are named by resource id or class name instead.
+
 ## [0.0.6] - 2026-10-14
 
 ### Fixed

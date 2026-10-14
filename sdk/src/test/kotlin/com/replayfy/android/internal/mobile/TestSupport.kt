@@ -24,16 +24,22 @@ internal fun threadsStartedSince(before: Set<Thread>): List<String> =
         .map { it.name }
 
 /** Timestamps of the frames in one gzipped `[u64 ts][u32 size][jpeg]` archive. */
-internal fun frameTimestamps(gz: ByteArray): List<Long> {
+internal fun frameTimestamps(gz: ByteArray): List<Long> = frames(gz).map { it.first }
+
+/** The JPEGs in one gzipped frames archive, in order. */
+internal fun frameJpegs(gz: ByteArray): List<ByteArray> = frames(gz).map { it.second }
+
+private fun frames(gz: ByteArray): List<Pair<Long, ByteArray>> {
     val raw = GZIPInputStream(ByteArrayInputStream(gz)).use { it.readBytes() }
-    val out = ArrayList<Long>()
+    val out = ArrayList<Pair<Long, ByteArray>>()
     var off = 0
     while (off + 12 <= raw.size) {
         var ts = 0L
         for (i in 0 until 8) ts = ts or ((raw[off + i].toLong() and 0xff) shl (8 * i))
         var len = 0
         for (i in 0 until 4) len = len or ((raw[off + 8 + i].toInt() and 0xff) shl (8 * i))
-        out.add(ts)
+        val end = minOf(off + 12 + len, raw.size)
+        out.add(ts to raw.copyOfRange(off + 12, end))
         off += 12 + len
     }
     return out
@@ -64,6 +70,7 @@ internal class FakeUploader(override val token: String? = "tok-1") : MobileUploa
     fun queueMessageResults(vararg results: Boolean) = synchronized(lock) { messageResults.addAll(results.toList()) }
 
     val imageFrameCounts: List<Int> get() = synchronized(lock) { archives.map { frameTimestamps(it).size } }
+    val imageJpegs: List<ByteArray> get() = synchronized(lock) { archives.flatMap { frameJpegs(it) } }
     val imageTimestamps: List<Long> get() = synchronized(lock) { archives.flatMap { frameTimestamps(it) } }
     val messageBatchCount: Int get() = synchronized(lock) { batches.size }
     val lateBatches: List<ByteArray> get() = synchronized(lock) { ArrayList(lates) }
