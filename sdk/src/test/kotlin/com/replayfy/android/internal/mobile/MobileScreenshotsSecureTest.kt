@@ -55,8 +55,11 @@ class MobileScreenshotsSecureTest {
 
     private val uploader = FakeUploader()
 
-    private fun shots(activity: Activity? = null, privacyRects: () -> List<MaskRect> = { emptyList() }) =
-        MobileScreenshots(uploader, activityProvider = { activity }, privacyRects = privacyRects, nativeCapture = true)
+    private fun shots(
+        activity: Activity? = null,
+        privacyRects: () -> List<MaskRect> = { emptyList() },
+        webViewRects: (View) -> ((Long) -> List<MaskRect>)? = { null },
+    ) = MobileScreenshots(uploader, activityProvider = { activity }, privacyRects = privacyRects, nativeCapture = true, webViewRects = webViewRects)
 
     /** The one frame [shots] has encoded, once it is uploaded. */
     private fun onlyFrame(shots: MobileScreenshots): Bitmap {
@@ -98,7 +101,8 @@ class MobileScreenshotsSecureTest {
         val activity = Robolectric.buildActivity(SecureActivity::class.java).setup().get()
         shadowOf(Looper.getMainLooper()).idle()
         var lookups = 0
-        val shots = shots(activity) { lookups++; emptyList() }
+        var webScans = 0
+        val shots = shots(activity, privacyRects = { lookups++; emptyList() }, webViewRects = { webScans++; null })
         activity.content.draws = 0
 
         assertTrue(shots.captureBegan())
@@ -107,6 +111,7 @@ class MobileScreenshotsSecureTest {
         val frame = onlyFrame(shots)
         assertTrue("black, mean luma ${meanLuma(frame)}", meanLuma(frame) < 8)
         assertEquals("the privacy rects are never computed", 0, lookups)
+        assertEquals("no WebView is scanned", 0, webScans)
         assertEquals("the window is never drawn", 0, activity.content.draws)
         val decor = activity.window.decorView
         assertEquals("the size a capture encodes to", decor.width / 2, frame.width)

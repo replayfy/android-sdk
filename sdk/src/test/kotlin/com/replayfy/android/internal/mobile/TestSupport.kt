@@ -1,7 +1,25 @@
 package com.replayfy.android.internal.mobile
 
+import android.content.Context
+import android.webkit.WebView
 import java.io.ByteArrayInputStream
 import java.util.zip.GZIPInputStream
+
+/**
+ * A WebView that lays out like a real one under Robolectric. Robolectric
+ * stubs out the WebView engine, and WebView hands both its measuring and its
+ * frame to the engine, so a plain one stays 0x0 at (0, 0). This one takes the
+ * size and place its parent gives it. Robolectric runs no page script, so
+ * tests answer the scans themselves.
+ */
+internal open class LaidOutWebView(context: Context) : WebView(context) {
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) =
+        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), MeasureSpec.getSize(heightMeasureSpec))
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        left = l; top = t; right = r; bottom = b
+    }
+}
 
 /** Poll [condition] until it holds or [timeoutMs] passes (the drains run on
  *  their own threads). */

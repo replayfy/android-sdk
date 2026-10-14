@@ -6,5 +6,9 @@
         <activity
             android:name="com.replayfy.android.MaskTestActivity"
             android:exported="true" />
+        <!-- Host activity for the WebView masking instrumented test. -->
+        <activity
+            android:name="com.replayfy.android.WebViewMaskTestActivity"
+            android:exported="true" />
     </application>
 </manifest>

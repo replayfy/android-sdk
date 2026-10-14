@@ -335,6 +335,11 @@ automatically, always as a solid box, with no setup:
   `creditCardExpirationDate`, `creditCardExpirationMonth`,
   `creditCardExpirationYear`;
 - one-time-code fields: any autofill hint containing `otp` (e.g. `smsOTPCode`);
+- password inputs on pages shown in a `WebView` (`<input type="password">`),
+  and any page element with the class `rr-block`. With `occludeAllTextFields`
+  every text input, textarea and `contenteditable` element of the page is
+  masked too. Only the page's top document is searched: mask a WebView whose
+  fields sit in an iframe with `addPrivacyView(webView)`;
 - every screen of a `FLAG_SECURE` window, recorded as a black frame (the window
   is never copied or drawn).
 

@@ -36,6 +36,24 @@ could reach a recording around a mask.
   - one-time-code fields: any autofill hint containing `otp` (for example
     `smsOTPCode`).
   There is no limit on how many fields one screen masks.
+- **Password fields inside WebViews are masked automatically**, always as a
+  solid box, as the reference SDK does by default. On every frame the SDK runs
+  a small read-only script in each WebView on screen (it changes nothing on the
+  page) that finds:
+  - every `<input type="password">`;
+  - every element with the class `rr-block`, the web SDK's block class, so one
+    class hides an element on the web and in an app's WebView;
+  - with `occludeAllTextFields` (the app's or the dashboard's): every text-like
+    `<input>`, `<textarea>`, `contenteditable` and `.input-field` element.
+
+  The masks follow scrolling and pinch zoom, and cover only the part of the
+  WebView that shows. Only the page's top document is searched, as in the
+  reference: fields inside an iframe or a shadow root are not found, so mask
+  such a WebView with `addPrivacyView(webView)`. When a page doesn't answer in
+  time, a frame reuses the previous frame's WebView masks while the same
+  WebViews are on screen, and otherwise records without them. This covers
+  React Native's `react-native-webview` too; Flutter apps capture their frames
+  in Dart and are unchanged.
 - **The dashboard's "Always mask input values" now applies to Android
   sessions.** When it is on, every `EditText` is masked, as with
   `occludeAllTextFields(true)`, from the next session start. It adds to the

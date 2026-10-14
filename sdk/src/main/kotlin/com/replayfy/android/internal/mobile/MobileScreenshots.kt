@@ -38,6 +38,12 @@ import kotlin.math.floor
  * tracker records it. It is never copied or drawn: the frame is made without
  * reading a single pixel of the window.
  *
+ * [webViewRects] starts the frame's WebView scan on the main thread, next to
+ * [privacyRects], and hands back an awaiter for its masks (null: no scan).
+ * The awaiter is only ever called on the PixelCopy thread, just before the
+ * encode: the scan's answers arrive on the main thread, so waiting there
+ * would block them.
+ *
  * One instance per session, with threads of its own (upload, PixelCopy,
  * host-frame decode). They are shut down once the session is over: after
  * [stop]'s final upload, or [discard], and once no capture still under way
@@ -49,10 +55,14 @@ class MobileScreenshots(
     private val activityProvider: () -> Activity?,
     private val privacyRects: () -> List<com.replayfy.android.MaskRect>,
     private val nativeCapture: Boolean = true,
+    private val webViewRects: (View) -> ((Long) -> List<com.replayfy.android.MaskRect>)? = { null },
 ) {
     internal companion object {
         /** Solid colour of OVERLAY masks and of the whole-screen cover. */
         const val MASK_COLOR: Int = 0xFF383838.toInt()
+
+        /** How long a frame waits for its WebView masks, at most. */
+        const val WEBVIEW_WAIT_MS = 300L
     }
 
     private val lock = Any()
@@ -273,31 +283,37 @@ class MobileScreenshots(
             // to grab. If the privacy lookup throws, skip the whole frame rather
             // than ship an unmasked one.
             val rects = try { privacyRects() } catch (e: Throwable) { return }
+            // The WebView scan starts now, with the copy; its masks are
+            // waited for on the PixelCopy thread. A failure to start it skips
+            // the frame like the lookup above.
+            val web = try { webViewRects(view) } catch (e: Throwable) { return }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                 try {
                     PixelCopy.request(activity.window, bmp, { result ->
-                        onPixelCopyResult(result == PixelCopy.SUCCESS, bmp, view, rects)
+                        onPixelCopyResult(result == PixelCopy.SUCCESS, bmp, view, rects, web)
                     }, pixelCopyHandler)
                     handedOff = true
                 } catch (e: Throwable) {
                     bmp.recycle()
                     handedOff = true
-                    drawFallback(view, w, h, rects) { captureEnded() }
+                    drawFallback(view, w, h, rects, web) { captureEnded() }
                 }
             } else {
                 handedOff = true
-                drawFallback(view, w, h, rects) { captureEnded() }
+                drawFallback(view, w, h, rects, web) { captureEnded() }
             }
         } finally {
             if (!handedOff) captureEnded()
         }
     }
 
-    /** PixelCopy's callback, on the PixelCopy thread. Ends the capture once. */
+    /** PixelCopy's callback, on the PixelCopy thread. Ends the capture once.
+     *  [web] is the frame's WebView-mask awaiter, if a scan started. */
     internal fun onPixelCopyResult(
         copied: Boolean, bmp: Bitmap, view: View, rects: List<com.replayfy.android.MaskRect>,
+        web: ((Long) -> List<com.replayfy.android.MaskRect>)? = null,
     ) {
         val w = bmp.width; val h = bmp.height
         if (copied) {
@@ -308,14 +324,14 @@ class MobileScreenshots(
                 try { encodeSolid(w, h, Color.BLACK) } finally { captureEnded() }
                 return
             }
-            try { encode(bmp, rects) } finally { captureEnded() }
+            try { encodeWithWebViews(bmp, rects, web) } finally { captureEnded() }
             return
         }
         bmp.recycle()
         // The fallback draws the View tree, which only the main thread may do
         // (see drawFallback); this callback runs on the PixelCopy thread.
         val posted = try {
-            main.post { drawFallback(view, w, h, rects) { captureEnded() } }
+            main.post { drawFallback(view, w, h, rects, web) { captureEnded() } }
         } catch (e: Throwable) { false }
         if (!posted) captureEnded()
     }
@@ -328,9 +344,11 @@ class MobileScreenshots(
      *  goes to the PixelCopy thread like a PixelCopy frame. [done] runs once,
      *  after the frame is encoded or skipped. A window that turned secure
      *  since the tick is never drawn (a software draw ignores FLAG_SECURE):
-     *  its frame is black. */
+     *  its frame is black. The WebView masks [web] are waited for with the
+     *  encode, off the main thread. */
     private fun drawFallback(
-        view: View, w: Int, h: Int, rects: List<com.replayfy.android.MaskRect>, done: () -> Unit,
+        view: View, w: Int, h: Int, rects: List<com.replayfy.android.MaskRect>,
+        web: ((Long) -> List<com.replayfy.android.MaskRect>)?, done: () -> Unit,
     ) {
         if (PrivacyRegistry.isSecureWindow(view)) {
             postSolidFrame(w, h, Color.BLACK, done)
@@ -343,10 +361,27 @@ class MobileScreenshots(
         }
         val posted = try {
             pixelCopyHandler.post {
-                try { encode(bmp, rects) } catch (e: Throwable) { /* skip frame */ } finally { done() }
+                try { encodeWithWebViews(bmp, rects, web) } catch (e: Throwable) { /* skip frame */ } finally { done() }
             }
         } catch (e: Throwable) { false }
         if (!posted) { bmp.recycle(); done() }
+    }
+
+    /** [encode] with the frame's WebView masks added to [rects]. Waits up to
+     *  [WEBVIEW_WAIT_MS] for them: PIXELCOPY THREAD ONLY, never main (the
+     *  scan answers on main). If the wait throws, the frame is skipped
+     *  rather than shipped without them, like a failed privacy lookup. The
+     *  frame is stamped before the wait: it shows the screen as copied. */
+    private fun encodeWithWebViews(
+        bmp: Bitmap, rects: List<com.replayfy.android.MaskRect>,
+        web: ((Long) -> List<com.replayfy.android.MaskRect>)?,
+    ) {
+        val ts = System.currentTimeMillis()
+        val all = if (web == null) rects else {
+            val masks = try { web(WEBVIEW_WAIT_MS) } catch (e: Throwable) { bmp.recycle(); return }
+            if (masks.isEmpty()) rects else rects + masks
+        }
+        encode(bmp, all, ts)
     }
 
     /** Encode a solid [color] frame on the PixelCopy thread, the size a
