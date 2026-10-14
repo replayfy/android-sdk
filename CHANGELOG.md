@@ -3,7 +3,7 @@
 All notable changes to the Replayfy Android SDK are documented here. This
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.0.5] - Unreleased
+## [0.0.5] - 2026-10-14
 
 Session replay that holds up across background/resume cycles, and license
 metadata that matches the MIT `LICENSE`.
