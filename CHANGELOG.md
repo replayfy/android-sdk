@@ -3,6 +3,18 @@
 All notable changes to the Replayfy Android SDK are documented here. This
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.6] - 2026-10-14
+
+### Fixed
+
+- **No more crash in apps that use Jetpack Compose.** When PixelCopy could
+  not copy the window (common on Android 8 and 9), the SDK fell back to
+  drawing the view tree on its own background thread. Compose then crashed
+  the app on its next frame with `IllegalArgumentException: Detected
+  multithreaded access to SnapshotStateObserver`, and drawing any View off its
+  thread is unsafe. The fallback now draws on the main thread and encodes the
+  JPEG in the background.
+
 ## [0.0.5] - 2026-10-14
 
 Session replay that holds up across background/resume cycles, and license

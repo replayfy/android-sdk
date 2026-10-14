@@ -242,30 +242,62 @@ class MobileScreenshots(
                 val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                 try {
                     PixelCopy.request(activity.window, bmp, { result ->
-                        try {
-                            if (result == PixelCopy.SUCCESS) encode(bmp, rects) else { bmp.recycle(); drawFallback(view, w, h, rects) }
-                        } finally {
-                            captureEnded()
-                        }
+                        onPixelCopyResult(result == PixelCopy.SUCCESS, bmp, view, rects)
                     }, pixelCopyHandler)
                     handedOff = true
                 } catch (e: Throwable) {
-                    bmp.recycle(); drawFallback(view, w, h, rects)
+                    bmp.recycle()
+                    handedOff = true
+                    drawFallback(view, w, h, rects) { captureEnded() }
                 }
             } else {
-                drawFallback(view, w, h, rects)
+                handedOff = true
+                drawFallback(view, w, h, rects) { captureEnded() }
             }
         } finally {
             if (!handedOff) captureEnded()
         }
     }
 
-    private fun drawFallback(view: View, w: Int, h: Int, rects: List<com.replayfy.android.MaskRect>) {
-        try {
-            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            view.draw(Canvas(bmp))
-            encode(bmp, rects)
-        } catch (e: Throwable) { /* skip frame */ }
+    /** PixelCopy's callback, on the PixelCopy thread. Ends the capture once. */
+    internal fun onPixelCopyResult(
+        copied: Boolean, bmp: Bitmap, view: View, rects: List<com.replayfy.android.MaskRect>,
+    ) {
+        if (copied) {
+            try { encode(bmp, rects) } finally { captureEnded() }
+            return
+        }
+        val w = bmp.width; val h = bmp.height
+        bmp.recycle()
+        // The fallback draws the View tree, which only the main thread may do
+        // (see drawFallback); this callback runs on the PixelCopy thread.
+        val posted = try {
+            main.post { drawFallback(view, w, h, rects) { captureEnded() } }
+        } catch (e: Throwable) { false }
+        if (!posted) captureEnded()
+    }
+
+    /** Software-draw the window when PixelCopy can't. MAIN THREAD ONLY: a View
+     *  may only be drawn on the thread that owns it. Drawing it on the PixelCopy
+     *  thread made Jetpack Compose throw "Detected multithreaded access to
+     *  SnapshotStateObserver" on the app's next frame, crashing the host app,
+     *  and is unsafe for any View. Only the draw happens here; the JPEG encode
+     *  goes to the PixelCopy thread like a PixelCopy frame. [done] runs once,
+     *  after the frame is encoded or skipped. */
+    private fun drawFallback(
+        view: View, w: Int, h: Int, rects: List<com.replayfy.android.MaskRect>, done: () -> Unit,
+    ) {
+        val bmp = try {
+            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { view.draw(Canvas(it)) }
+        } catch (e: Throwable) {
+            done(); return // skip frame
+        }
+        val posted = try {
+            pixelCopyHandler.post {
+                try { encode(bmp, rects) } catch (e: Throwable) { /* skip frame */ } finally { done() }
+            }
+        } catch (e: Throwable) { false }
+        if (!posted) { bmp.recycle(); done() }
     }
 
     /** Obscure a region of [src] onto [canvas] via downscale → upscale.

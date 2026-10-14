@@ -33,7 +33,7 @@ your app module's **`build.gradle.kts`**:
 
 ```kotlin
 dependencies {
-    implementation("app.replayfy:android-sdk:0.0.5")
+    implementation("app.replayfy:android-sdk:0.0.6")
 }
 ```
 
@@ -72,7 +72,7 @@ JitPack's group:
 
 ```kotlin
 dependencies {
-    implementation("com.github.replayfy:android-sdk:0.0.5")
+    implementation("com.github.replayfy:android-sdk:0.0.6")
 }
 ```
 </details>
