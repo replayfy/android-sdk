@@ -14,6 +14,10 @@ import android.view.PixelCopy
 import android.view.View
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 /**
  * Periodic screenshot capture → frames archive upload (mirrors iOS).
@@ -22,29 +26,95 @@ import java.util.concurrent.Executors
  * (PixelCopy on API 26+, Canvas draw fallback otherwise), downscales,
  * JPEG-compresses, accumulates, and uploads a gzipped frames archive
  * once `batchSize` frames are collected.
+ *
+ * [nativeCapture] is false for hosts that push their own frames through
+ * [submitFrame] (Flutter's Dart-side capture): the capture timer must then
+ * never run, including on resume.
+ *
+ * One instance per session, with threads of its own (upload, PixelCopy,
+ * host-frame decode). They are shut down once the session is over: after
+ * [stop]'s final upload, or [discard], and once no capture still under way
+ * can add a frame. Otherwise every session rotation (a long background,
+ * startNewSession) leaves them idle for the life of the process.
  */
 class MobileScreenshots(
-    private val transport: MobileTransport,
+    private val transport: MobileUploading,
     private val activityProvider: () -> Activity?,
     private val privacyRects: () -> List<com.replayfy.android.MaskRect>,
+    private val nativeCapture: Boolean = true,
 ) {
     private val lock = Any()
     private val pending = ArrayList<Pair<ByteArray, Long>>()
-    private val main = Handler(Looper.getMainLooper())
+    // Lazy: a host-fed engine (Flutter) never captures natively, so it never
+    // needs the main-thread timer or the PixelCopy thread.
+    private val main by lazy { Handler(Looper.getMainLooper()) }
     private val sender = Executors.newSingleThreadExecutor()
-    private val pixelCopyThread = HandlerThread("replay-pixelcopy").apply { start() }
-    private val pixelCopyHandler = Handler(pixelCopyThread.looper)
+    // Kept apart from its Handler so the thread can be quit with the session.
+    private val pixelCopyThread = lazy { HandlerThread("replay-pixelcopy").apply { start() } }
+    private val pixelCopyHandler by lazy { Handler(pixelCopyThread.value.looper) }
+    // Host-fed frames (submitFrame) decode here, one at a time in the order
+    // they were reported. Not on `sender`: there a decode waited behind an
+    // upload (up to a minute), so a pause decided what to send before frames
+    // reported earlier had even been buffered. Created on the first host
+    // frame; its thread exits when idle, and the pool shuts down with the
+    // session.
+    private val decoder = lazy {
+        ThreadPoolExecutor(1, 1, 10, TimeUnit.SECONDS, LinkedBlockingQueue()).apply { allowCoreThreadTimeOut(true) }
+    }
 
-    private var running = false
+    // Capture timer state, guarded by `lock`. Each start bumps the generation,
+    // so a tick chain from before a pause/resume ends itself instead of running
+    // alongside the new one (pause and resume can come from any thread).
+    private var capturing = false
+    private var timerGeneration = 0
+
+    // Upload drain state, guarded by `lock`. One drain runs at a time (on the
+    // single `sender` thread) so archives reach the server in capture order.
+    private var draining = false
+    /** Frames captured at or before this time go out even as a partial batch
+     *  (a pause, resume or stop asked for everything up to that moment);
+     *  later frames wait for a full batch. 0 = full batches only. */
+    private var flushThroughTs = 0L
+    private var roundsLeft = 0
+    /** A flush arrived while a round was in flight. If that round fails, the
+     *  request still gets its own attempt (a resume right after an upload the
+     *  background cut off must not be lost with it). */
+    private var requestedDuringRound = false
+    private val drainWaiters = ArrayList<() -> Unit>()
+    /** stop() or discard() ran: the capture timer must never start again. */
+    private var stopped = false
+    /** discard() ran: drop everything and send nothing more. */
+    private var discarded = false
+
+    // Thread lifetime, guarded by `lock`.
+    /** Captures under way: a native screenshot waiting on PixelCopy, a host
+     *  frame waiting to decode. Each ends in appendFrame (or is dropped); the
+     *  threads stay up until then, so a frame that lands after stop() still
+     *  goes out. */
+    private var capturesInFlight = 0
+    /** stop()'s final upload has been asked for (on the decoder thread when
+     *  one exists, behind the host frames reported before it). */
+    private var finalFlushRequested = false
+    /** The threads are shut down: nothing more is captured or sent. */
+    private var released = false
+
     private var intervalMs = 333L      // 3 fps default
     private var jpegQuality = 50
     private val targetScale = 0.5f     // downscale to keep size down
     private val batchSize = 20
     private val maxBuffered = 500
+    /** Archives one drain may send. Bounds a drain whose buffer refills as
+     *  fast as it uploads, so it still ends. */
+    private val maxDrainRounds = 30
 
-    private val tick = object : Runnable {
+    private inner class Tick(private val generation: Int) : Runnable {
         override fun run() {
-            if (!running) return
+            // Counted in the same hold as the check, so a stop() on another
+            // thread can't quit the PixelCopy thread under this capture.
+            val live = synchronized(lock) {
+                (capturing && generation == timerGeneration).also { if (it) capturesInFlight++ }
+            }
+            if (!live) return
             capture()
             main.postDelayed(this, intervalMs)
         }
@@ -59,81 +129,134 @@ class MobileScreenshots(
     }
 
     fun start() {
-        running = true
-        main.post(tick)
+        startTimer()
     }
 
     /** Feed an externally-captured frame (Flutter's Dart-side RepaintBoundary
      *  capture, since native PixelCopy can't read Flutter's SurfaceView) into
      *  the same encode → accumulate → upload pipeline. Decodes + re-encodes on
-     *  the sender thread so it never touches the main thread. [rects] are the
+     *  the decoder thread so it never touches the main thread. [rects] are the
      *  occlusion regions (developer `ReplayMask` bounds, in the PNG's pixel
      *  coords) the encoder masks — Flutter has no native view tree to mask. */
     fun submitFrame(png: ByteArray, rects: List<com.replayfy.android.MaskRect>) {
-        sender.execute {
-            val bmp = try {
-                android.graphics.BitmapFactory.decodeByteArray(png, 0, png.size)
-            } catch (e: Throwable) { null } ?: return@execute
-            encode(bmp, rects)
+        // Stamped when reported, not when decoded: the frame shows the screen
+        // as of now, so a pause or stop that follows counts it among the frames
+        // captured before it.
+        val ts = System.currentTimeMillis()
+        // Once the session is over (its threads gone) the frame is dropped.
+        // Counted before it is queued, so the decoder and the upload that
+        // sends it stay up until it lands.
+        if (!captureBegan()) return
+        decoder.value.execute {
+            try {
+                if (synchronized(lock) { discarded }) return@execute
+                val bmp = try {
+                    android.graphics.BitmapFactory.decodeByteArray(png, 0, png.size)
+                } catch (e: Throwable) { null } ?: return@execute
+                encode(bmp, rects, ts)
+            } finally {
+                captureEnded()
+            }
         }
     }
 
-    fun stop() {
-        running = false
-        main.removeCallbacks(tick)
-        flush()
+    /** Session end: stop capturing and upload everything buffered.
+     *  [completion] runs once that upload settles. The threads are shut down
+     *  after it, once no capture still under way can add a frame. */
+    fun stop(completion: (() -> Unit)? = null) {
+        synchronized(lock) { stopped = true }
+        stopTimer()
+        flushAll(final = true, completion = completion)
     }
 
     /** Drop pending frames WITHOUT uploading — the cancelSession counterpart to
-     *  [stop] (which flushes). Stops the capture loop. */
+     *  [stop] (which flushes). Stops the capture loop. The buffer is cleared at
+     *  once, under the lock, so a running drain stops before its next round;
+     *  the threads go once it has, and once no capture is under way. */
     fun discard() {
-        running = false
-        main.removeCallbacks(tick)
-        synchronized(lock) { pending.clear() }
+        val release = synchronized(lock) {
+            stopped = true
+            discarded = true
+            pending.clear()
+            releaseIfDoneLocked()
+        }
+        stopTimer()
+        if (release) releaseThreads()
     }
 
-    /** Suspend capture while the app is backgrounded (no point shooting an
-     *  invisible window — it just inflates the archive). Flushes what's
-     *  pending so nothing is lost. */
-    fun pause() {
-        if (!running) return
-        running = false
-        main.removeCallbacks(tick)
-        flush()
+    /** Suspend capture (backgrounding, an excluded screen, a host pause) and
+     *  upload everything buffered — shooting an invisible window just inflates
+     *  the archive. Always flushes, even when the timer never ran: a host-fed
+     *  engine (Flutter) has frames buffered with no timer at all. Never
+     *  discards: frames that fail to send stay queued and go out on [resume].
+     *  [completion] runs once the uploads settle. */
+    fun pause(completion: (() -> Unit)? = null) {
+        stopTimer()
+        flush(all = true, completion = completion)
     }
 
-    /** Resume capture when the app returns to the foreground. */
+    /** Resume after [pause]. First push whatever the pause could not get out;
+     *  then restart the capture timer, but only when this engine screenshots
+     *  natively. Host-fed capture (Flutter) never starts the timer — doing so
+     *  began native screenshots after the first background, without the
+     *  host's occlusion rects. */
     fun resume() {
-        if (running) return
-        running = true
-        main.post(tick)
+        flush(all = true)
+        startTimer()
     }
 
+    private fun startTimer() {
+        if (!nativeCapture) return
+        val generation = synchronized(lock) {
+            // A stop() before this resume must win.
+            if (stopped || capturing) return
+            capturing = true
+            ++timerGeneration
+        }
+        main.post(Tick(generation))
+    }
+
+    private fun stopTimer() {
+        synchronized(lock) { capturing = false }
+    }
+
+    /** One screenshot, counted in by [Tick]. Ends with [captureEnded] exactly
+     *  once: here, or in the PixelCopy callback when the copy was handed off. */
     private fun capture() {
-        val activity = activityProvider() ?: return
-        val view = activity.window?.decorView ?: return
-        val w = view.width; val h = view.height
-        if (w <= 0 || h <= 0) return
+        var handedOff = false
+        try {
+            val activity = activityProvider() ?: return
+            val view = activity.window?.decorView ?: return
+            val w = view.width; val h = view.height
+            if (w <= 0 || h <= 0) return
 
-        // Resolve sensitive rects HERE, on the main thread — `capture` always
-        // runs on the main looper, whereas `encode` runs on the PixelCopy
-        // background thread where walking the View tree is unsafe. Computing
-        // now also keeps the boxes aligned with the pixels PixelCopy is about
-        // to grab. If the privacy lookup throws, skip the whole frame rather
-        // than ship an unmasked one.
-        val rects = try { privacyRects() } catch (e: Throwable) { return }
+            // Resolve sensitive rects HERE, on the main thread — `capture` always
+            // runs on the main looper, whereas `encode` runs on the PixelCopy
+            // background thread where walking the View tree is unsafe. Computing
+            // now also keeps the boxes aligned with the pixels PixelCopy is about
+            // to grab. If the privacy lookup throws, skip the whole frame rather
+            // than ship an unmasked one.
+            val rects = try { privacyRects() } catch (e: Throwable) { return }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            try {
-                PixelCopy.request(activity.window, bmp, { result ->
-                    if (result == PixelCopy.SUCCESS) encode(bmp, rects) else { bmp.recycle(); drawFallback(view, w, h, rects) }
-                }, pixelCopyHandler)
-            } catch (e: Throwable) {
-                bmp.recycle(); drawFallback(view, w, h, rects)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                try {
+                    PixelCopy.request(activity.window, bmp, { result ->
+                        try {
+                            if (result == PixelCopy.SUCCESS) encode(bmp, rects) else { bmp.recycle(); drawFallback(view, w, h, rects) }
+                        } finally {
+                            captureEnded()
+                        }
+                    }, pixelCopyHandler)
+                    handedOff = true
+                } catch (e: Throwable) {
+                    bmp.recycle(); drawFallback(view, w, h, rects)
+                }
+            } else {
+                drawFallback(view, w, h, rects)
             }
-        } else {
-            drawFallback(view, w, h, rects)
+        } finally {
+            if (!handedOff) captureEnded()
         }
     }
 
@@ -181,7 +304,7 @@ class MobileScreenshots(
         }
     }
 
-    private fun encode(bmp: Bitmap, rects: List<com.replayfy.android.MaskRect>) {
+    private fun encode(bmp: Bitmap, rects: List<com.replayfy.android.MaskRect>, ts: Long = System.currentTimeMillis()) {
         try {
             val sw = (bmp.width * targetScale).toInt().coerceAtLeast(1)
             val sh = (bmp.height * targetScale).toInt().coerceAtLeast(1)
@@ -216,27 +339,200 @@ class MobileScreenshots(
             if (scaled != bmp) scaled.recycle()
             bmp.recycle()
 
-            val jpeg = out.toByteArray()
-            val ready: Boolean
-            synchronized(lock) {
-                pending.add(jpeg to System.currentTimeMillis())
-                if (pending.size > maxBuffered) pending.subList(0, pending.size - maxBuffered).clear()
-                ready = pending.size >= batchSize
-            }
-            if (ready) flush()
+            appendFrame(out.toByteArray(), ts)
         } catch (e: Throwable) { /* skip frame */ }
     }
 
-    fun flush() {
-        val frames: List<Pair<ByteArray, Long>>
+    /** Buffer one encoded frame; a full batch starts an upload. A frame that
+     *  lands after stop() (its capture was already in flight) goes straight
+     *  out: nothing will flush this session again. */
+    internal fun appendFrame(jpeg: ByteArray, ts: Long = System.currentTimeMillis()) {
+        val ready: Boolean
+        val ended: Boolean
         synchronized(lock) {
-            if (pending.isEmpty()) return
-            frames = ArrayList(pending); pending.clear()
+            if (discarded || released) return
+            pending.add(jpeg to ts)
+            if (pending.size > maxBuffered) pending.subList(0, pending.size - maxBuffered).clear()
+            ended = stopped
+            ready = ended || pending.size >= batchSize
         }
-        sender.execute {
-            val archive = MobileFrames.archive(frames) ?: return@execute
-            val ok = transport.sendImages(archive)
-            if (!ok) synchronized(lock) { pending.addAll(0, frames) }
+        // Already buffered, so no need to wait for frames still decoding.
+        if (ready) requestDrain(throughTs = if (ended) System.currentTimeMillis() else 0L, final = false, completion = null)
+    }
+
+    /**
+     * Upload buffered frames oldest first, one archive of at most `batchSize`
+     * frames per request. `all = false` (a batch just filled) sends full
+     * batches only. `all = true` (pause, resume, stop) also sends a partial
+     * batch of the frames captured up to now; frames captured afterwards keep
+     * filling a batch. A failed upload puts its frames back at the front and
+     * ends the drain, so nothing is dropped and a retry can't spin.
+     * [completion] runs once the drain settles.
+     */
+    fun flush(all: Boolean = false, completion: (() -> Unit)? = null) {
+        if (all) flushAll(final = false, completion = completion)
+        else requestDrain(throughTs = 0L, final = false, completion = completion)
+    }
+
+    /** [flush] with `all = true`; [final] for stop()'s, the session's last. */
+    private fun flushAll(final: Boolean, completion: (() -> Unit)?) {
+        val through = System.currentTimeMillis()
+        // Host frames reported before this call may still be decoding. Queue
+        // the request behind them so it covers them, and its completion (a
+        // stop the host waits on before exiting) waits for them too. Rejected
+        // only once the session's threads are gone, when there is nothing
+        // left to wait for.
+        val queued = decoder.isInitialized() && try {
+            decoder.value.execute { requestDrain(through, final, completion) }
+            true
+        } catch (_: RejectedExecutionException) {
+            false
+        }
+        if (!queued) requestDrain(through, final, completion)
+    }
+
+    /** Start a drain, or widen the running one. [throughTs] > 0 also sends
+     *  the frames captured up to that time as a partial batch. */
+    private fun requestDrain(throughTs: Long, final: Boolean, completion: (() -> Unit)?) {
+        val all = throughTs > 0L
+        val startDrain = synchronized(lock) {
+            if (discarded || released) {
+                // Nothing will be sent; a caller waiting still hears back.
+                false
+            } else {
+                // Recorded with the drain it starts or joins, so the threads
+                // can't go before that drain has ended.
+                if (final) finalFlushRequested = true
+                if (all) {
+                    flushThroughTs = maxOf(flushThroughTs, throughTs)
+                    roundsLeft = maxDrainRounds
+                }
+                completion?.let { drainWaiters.add(it) }
+                if (draining) {
+                    // The running drain picks up the new frames, the wider scope
+                    // and the waiter. A pause/resume/stop request also earns its
+                    // own attempt if the in-flight round fails.
+                    if (all) requestedDuringRound = true
+                    return
+                }
+                draining = true
+                if (!all) roundsLeft = maxDrainRounds
+                true
+            }
+        }
+        if (startDrain) sender.execute { drainLoop() } else completion?.let { runWaiters(listOf(it)) }
+    }
+
+    /** The drain, one archive per round on the `sender` thread. The queued
+     *  task holds `this`, so the drain finishes sending the session's last
+     *  frames after ReplayCore releases this object on stop(). */
+    private fun drainLoop() {
+        while (true) {
+            var frames: List<Pair<ByteArray, Long>> = emptyList()
+            var done: List<() -> Unit>? = null
+            synchronized(lock) {
+                val forced = pending.firstOrNull()?.let { it.second <= flushThroughTs } ?: false
+                if (discarded || roundsLeft <= 0 || pending.isEmpty() || !(forced || pending.size >= batchSize)) {
+                    done = endDrainLocked()
+                } else {
+                    roundsLeft--
+                    requestedDuringRound = false
+                    val head = pending.subList(0, minOf(batchSize, pending.size))
+                    frames = ArrayList(head)
+                    head.clear()
+                }
+            }
+            done?.let { return runWaiters(it) }
+
+            // Compression failed: skip this batch rather than retry it forever.
+            val archive = MobileFrames.archive(frames) ?: continue
+            val ok = try { transport.sendImages(archive) } catch (_: Throwable) { false }
+            if (ok) continue
+
+            var retry = false
+            synchronized(lock) {
+                if (discarded) {
+                    done = endDrainLocked()
+                } else {
+                    pending.addAll(0, frames)
+                    if (pending.size > maxBuffered) pending.subList(0, pending.size - maxBuffered).clear()
+                    // Someone asked for a flush while this upload was in flight:
+                    // give that request its own attempt.
+                    if (requestedDuringRound) retry = true else done = endDrainLocked()
+                }
+            }
+            if (retry) continue
+            done?.let { return runWaiters(it) }
         }
     }
+
+    /** Ends the drain and hands back its waiters, led by the threads' shutdown
+     *  when this was the session's last drain. Call with `lock` held, in the
+     *  same hold as the check that ended it, so a flush that arrives in
+     *  between can't be dropped; run the waiters after releasing. */
+    private fun endDrainLocked(): List<() -> Unit> {
+        val waiters = ArrayList<() -> Unit>()
+        draining = false
+        // Shutdown lets this task (the drain itself) finish on the sender.
+        if (releaseIfDoneLocked()) waiters.add(::releaseThreads)
+        waiters.addAll(drainWaiters)
+        drainWaiters.clear()
+        flushThroughTs = 0L
+        roundsLeft = 0
+        requestedDuringRound = false
+        return waiters
+    }
+
+    private fun runWaiters(waiters: List<() -> Unit>) {
+        waiters.forEach { runCatching { it() } }
+    }
+
+    // ── Thread lifetime ──────────────────────────────────────────────
+
+    /** Count a capture in; false (drop the frame) once the session is over. */
+    internal fun captureBegan(): Boolean = synchronized(lock) {
+        if (released || discarded) false else { capturesInFlight++; true }
+    }
+
+    /** The capture [captureBegan] counted has landed in appendFrame, or been
+     *  dropped. The last one out after the session's end shuts the threads. */
+    internal fun captureEnded() {
+        val release = synchronized(lock) {
+            capturesInFlight--
+            releaseIfDoneLocked()
+        }
+        if (release) releaseThreads()
+    }
+
+    /** True, once, when the threads can go: stop()'s final upload has been
+     *  asked for (or discard() ran), no drain is running, and no capture is
+     *  under way that could still add a frame. Call with `lock` held, then
+     *  [releaseThreads] after releasing it. */
+    private fun releaseIfDoneLocked(): Boolean {
+        if (released || draining || capturesInFlight > 0 || !(finalFlushRequested || discarded)) return false
+        released = true
+        return true
+    }
+
+    /** Shut the session's threads down. shutdown(), not shutdownNow(): the
+     *  caller may be the drain's own last task, and a flush already queued on
+     *  the decoder (a pause just before the end) still runs, so whoever waits
+     *  on it hears back. */
+    private fun releaseThreads() {
+        sender.shutdown()
+        if (decoder.isInitialized()) decoder.value.shutdown()
+        if (pixelCopyThread.isInitialized()) pixelCopyThread.value.quitSafely()
+    }
+
+    /** Frames waiting to upload. For tests. */
+    internal val pendingCount: Int
+        get() = synchronized(lock) { pending.size }
+
+    /** Whether the native capture timer is running. For tests. */
+    internal val isCapturing: Boolean
+        get() = synchronized(lock) { capturing }
+
+    /** Whether an upload drain is running. For tests. */
+    internal val isDraining: Boolean
+        get() = synchronized(lock) { draining }
 }

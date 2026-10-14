@@ -27,6 +27,21 @@ data class MobileStartResponse(
 )
 
 /**
+ * The upload half of [MobileTransport] that the frame and message buffers
+ * drain into. An interface so the drain/retry logic can be exercised against a
+ * fake in tests. Calls are synchronous (the buffers call them from their own
+ * sender thread); `true` means the server accepted the batch.
+ */
+interface MobileUploading {
+    /** The session bearer these uploads carry. Saved next to a session's final
+     *  batch so a later launch can still deliver it to the right session. */
+    val token: String?
+    fun sendMessages(gzippedBatch: ByteArray): Boolean
+    fun sendLateMessages(batch: ByteArray): Boolean
+    fun sendImages(gzippedArchive: ByteArray): Boolean
+}
+
+/**
  * HTTP transport for the mobile ingest endpoints (mirrors iOS).
  *
  *   POST {host}/v1/mobile/start   → JSON device params, returns token
@@ -37,9 +52,9 @@ data class MobileStartResponse(
  * Built on HttpURLConnection to stay dependency-light. All calls are
  * synchronous; callers invoke them off the main thread.
  */
-class MobileTransport(host: String, private val projectKey: String) {
+class MobileTransport(host: String, private val projectKey: String) : MobileUploading {
     private val baseURL = host.trimEnd('/')
-    @Volatile var token: String? = null
+    @Volatile override var token: String? = null
         private set
 
     fun start(params: JSONObject): MobileStartResponse? {
@@ -70,13 +85,21 @@ class MobileTransport(host: String, private val projectKey: String) {
         }
     }
 
-    fun sendMessages(gzippedBatch: ByteArray): Boolean =
+    override fun sendMessages(gzippedBatch: ByteArray): Boolean =
         post("/v1/mobile/i", gzippedBatch, json = false, bearer = true) != null
 
-    fun sendLateMessages(batch: ByteArray): Boolean =
+    override fun sendLateMessages(batch: ByteArray): Boolean =
         post("/v1/mobile/late", batch, json = false, bearer = true) != null
 
-    fun sendImages(gzippedArchive: ByteArray): Boolean =
+    /** A raw batch an earlier launch left on disk, under the token of the
+     *  session it belongs to (not this transport's session). Sent to /i, not
+     *  /late: the server has normally ended that session on its idle timer by
+     *  now, and /late would end it again, rebuilding its frames archive from a
+     *  stream the server no longer keeps (an empty replay over the real one). */
+    fun sendSavedMessages(batch: ByteArray, token: String): Boolean =
+        post("/v1/mobile/i", MobileFrames.gzip(batch), json = false, bearer = true, bearerToken = token) != null
+
+    override fun sendImages(gzippedArchive: ByteArray): Boolean =
         post("/v1/mobile/images", gzippedArchive, json = false, bearer = true) != null
 
     /** Best-effort "drop this session" signal — POST /v1/mobile/cancel with the
@@ -90,7 +113,13 @@ class MobileTransport(host: String, private val projectKey: String) {
             bearer = true,
         ) != null
 
-    private fun post(path: String, body: ByteArray, json: Boolean, bearer: Boolean): ByteArray? {
+    private fun post(
+        path: String,
+        body: ByteArray,
+        json: Boolean,
+        bearer: Boolean,
+        bearerToken: String? = token,
+    ): ByteArray? {
         var conn: HttpURLConnection? = null
         return try {
             conn = (URL(baseURL + path).openConnection() as HttpURLConnection).apply {
@@ -102,7 +131,7 @@ class MobileTransport(host: String, private val projectKey: String) {
                     "Content-Type",
                     if (json) "application/json" else "application/octet-stream",
                 )
-                if (bearer) token?.let { setRequestProperty("Authorization", "Bearer $it") }
+                if (bearer) bearerToken?.let { setRequestProperty("Authorization", "Bearer $it") }
             }
             DataOutputStream(conn.outputStream).use { it.write(body) }
             val code = conn.responseCode

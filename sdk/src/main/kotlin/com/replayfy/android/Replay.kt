@@ -273,7 +273,9 @@ object Replay {
      * regulated pixel content (HIPAA, banking PIN pad) where the
      * customer still wants the interaction timeline.
      *
-     * In-memory only; a process restart resets to running. Use
+     * Holds across background/foreground and session rotation until
+     * [resumeRecording], and also stops frames a host SDK feeds in
+     * (Flutter). In-memory only; a process restart resets to running. Use
      * [Replay.optOutSchematicRecordings] for a durable opt-out.
      *
      * Mirrors the reference mobile SDK's `pauseScreenRecording()`.
@@ -345,13 +347,17 @@ object Replay {
      */
     @JvmStatic
     fun optOutSchematicRecordings(optOut: Boolean) {
-        // ⚠️ STUB — sets an inert LegacyCore flag the live engine never reads;
-        // pixel capture is unaffected. See docs/sdk-facade-status.md.
+        // Persist the intent (read back by isOptedOutSchematicRecordings, and by
+        // the live engine's frame hold on later launches).
         LegacyCore.setSchematicOptOut(optOut)
+        // Apply to the LIVE engine: schematic capture IS the frame stream, so
+        // opting out holds it (host-fed Flutter frames included) while every
+        // other event type keeps flowing. A hold of its own: opting back in
+        // doesn't lift a pauseRecording() still in effect.
+        ReplayCore.shared.setSchematicOptOut(optOut)
     }
 
     /** Whether schematic (snapshot) recording is currently opted out. */
-    // ⚠️ STUB — reads the inert LegacyCore flag (see optOutSchematicRecordings).
     @JvmStatic
     fun isOptedOutSchematicRecordings(): Boolean = LegacyCore.isSchematicOptedOut()
 
@@ -783,8 +789,10 @@ object Replay {
     @JvmStatic
     @JvmOverloads
     fun stopApplicationAndUploadData(timeoutMs: Long = 5_000) {
-        // stop() flushes the in-memory batch as it tears the engine down.
-        ReplayCore.shared.stop()
+        // stop() flushes the in-memory batch as it tears the engine down; wait
+        // for those uploads, which run on the engine's own threads and would
+        // die with the process.
+        ReplayCore.shared.stopAndWait(timeoutMs)
     }
 
     /**
