@@ -223,3 +223,9 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.5.2")
     androidTestImplementation("androidx.test:rules:1.5.0")
 }
+
+// ConsumerRulesTest reads consumer-rules.pro, so a change to the rules alone
+// reruns the unit tests instead of leaving them up to date.
+tasks.withType<Test>().configureEach {
+    inputs.file("consumer-rules.pro")
+}

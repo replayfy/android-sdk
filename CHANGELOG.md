@@ -73,6 +73,11 @@ could reach a recording around a mask.
 
 ### Fixed
 
+- A minified release build of a host app no longer crashes at startup. R8 in
+  full mode (the default from AGP 8) removed the constructor WorkManager's
+  database is created through, because the keep rule of the Room version
+  WorkManager 2.9 brings doesn't name it. The SDK's consumer rules now keep
+  it.
 - Masks follow what a view actually shows: its visible, clipped and transformed
   bounds. A view scaled up (an animation, a React Native transform) was masked
   at its smaller layout size, leaving its edges uncovered; a field partly
