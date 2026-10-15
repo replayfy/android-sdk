@@ -144,8 +144,10 @@ from Kotlin and Java.
 ### Identity & events
 
 ```kotlin
-// Attach a known user to the session. email / name / plan are promoted to
-// filterable user fields; other properties are kept as custom traits.
+// Attach a known user to the session. email / name / plan / picture are promoted
+// to filterable user fields; other properties are kept as custom traits. Set
+// "picture" (or its alias "avatar") to a public https image URL to show the
+// user's avatar on the recording header and Users list (non-URL values ignored).
 Replay.identify("user_123", mapOf("email" to "a@b.com", "plan" to "pro"))
 
 // Fire a custom event (drives funnels and event filters).
