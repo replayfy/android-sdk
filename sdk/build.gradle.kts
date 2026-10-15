@@ -15,7 +15,7 @@ plugins {
 // -PpublishVersion=<tag>. The default (local and JitPack builds, which pass
 // nothing) is the release this tree is heading for, so its sessions aren't
 // reported as the release before it: bump it right after cutting a release.
-val sdkVersion = (project.findProperty("publishVersion") as String?) ?: "0.0.6"
+val sdkVersion = (project.findProperty("publishVersion") as String?) ?: "0.0.7"
 
 android {
     namespace = "com.replayfy.android"
@@ -222,4 +222,10 @@ dependencies {
     androidTestImplementation("androidx.test:core:1.5.0")
     androidTestImplementation("androidx.test:runner:1.5.2")
     androidTestImplementation("androidx.test:rules:1.5.0")
+}
+
+// ConsumerRulesTest reads consumer-rules.pro, so a change to the rules alone
+// reruns the unit tests instead of leaving them up to date.
+tasks.withType<Test>().configureEach {
+    inputs.file("consumer-rules.pro")
 }

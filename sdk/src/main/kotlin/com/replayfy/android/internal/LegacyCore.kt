@@ -630,11 +630,11 @@ internal object LegacyCore {
             perfMetrics?.stop()
         }
 
-        // Privacy — maskAllInputs maps to occludeAllTextFields(true).
-        // The dashboard's setting is a workspace-level default; the
-        // customer's per-call occludeAllTextFields(false) STILL gets
-        // overridden by a true dashboard value (dashboard always wins).
-        com.replayfy.android.internal.privacy.PrivacyRegistry.occludeAllTextFields =
+        // Privacy — the dashboard's maskAllInputs forces every EditText
+        // masked. It writes the dashboard's own flag, OR-ed with the app's
+        // occludeAllTextFields: true masks even where the app opted out,
+        // false never unmasks what the app asked to mask.
+        com.replayfy.android.internal.privacy.PrivacyRegistry.remoteOccludeAllTextFields =
             cfg.privacyMaskAllInputs
     }
 

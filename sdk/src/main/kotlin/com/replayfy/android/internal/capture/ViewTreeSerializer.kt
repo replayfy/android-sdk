@@ -75,9 +75,10 @@ internal object ViewTreeSerializer {
         //       Modifier.replayOcclude — the marker isn't in the
         //       view tree, so we check whether the view's window-
         //       relative frame overlaps any registered Compose Rect.
-        //       Compose registers window-coords; `loc` here is
-        //       SCREEN coords, so we compute window-coords separately.
-        val winLoc = IntArray(2).also { view.getLocationInWindow(it) }
+        //       Compose registers decor coords (window coords less
+        //       any adjustPan scroll); `loc` here is SCREEN coords, so
+        //       we compute decor coords separately.
+        val winLoc = com.replayfy.android.internal.privacy.PrivacyRegistry.locationInDecor(view)
         val winRect = android.graphics.Rect(
             winLoc[0], winLoc[1],
             winLoc[0] + view.width, winLoc[1] + view.height,

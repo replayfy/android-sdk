@@ -11,13 +11,16 @@ import android.graphics.Rect
  *                 smoothed). Hints at the shape/length of the content.
  *  - [OVERLAY]  — the region is painted with a solid box. Cleaner on a screen
  *                 full of fields, and the strongest guarantee — no source pixel
- *                 survives.
+ *                 survives. The default, as in the reference SDKs, which
+ *                 paint masks opaque.
  *  - [PIXELATE] — coarse mosaic blocks (downscale → upscale, no smoothing).
  *                 Reads as "redacted" while keeping rough layout/colour.
  *
  * Set globally with [Replay.setMaskStyle] (the default for addPrivacyView,
  * occludeAllTextFields, …), or per region where the host supplies it (React
- * Native / Flutter mask widgets, [Replay.occludeRectsOnNextFrame]).
+ * Native / Flutter mask widgets, [Replay.occludeRectsOnNextFrame]). The fields
+ * masked automatically, the whole-screen cover and FLAG_SECURE frames are
+ * always solid.
  */
 enum class ReplayMaskStyle(val raw: Int) {
     BLUR(0),

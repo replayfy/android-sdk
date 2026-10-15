@@ -10,8 +10,11 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalView
 import com.replayfy.android.Replay
 import com.replayfy.android.internal.bridge.ComposeBridge
+import kotlin.math.ceil
+import kotlin.math.floor
 
 /**
  * Jetpack Compose integration for the Replay Android SDK.
@@ -38,10 +41,11 @@ import com.replayfy.android.internal.bridge.ComposeBridge
  * Compose-occlude uses bounds-intersection rather than ancestor walk:
  * Compose composables aren't UIViews — the marker can't be inserted
  * into the View tree where the underlying capture pipeline walks.
- * Instead, the modifier registers the composable's window-relative
- * bounds via [ComposeBridge.registerOccludedBounds] and the
- * TapTracker + ViewTreeSerializer + BitmapCapture pipelines all
- * consult that table via PrivacyRegistry.
+ * Instead, the modifier registers the composable's bounds (in the
+ * window content's coordinates) via
+ * [ComposeBridge.registerOccludedBounds] and the TapTracker +
+ * ViewTreeSerializer + BitmapCapture pipelines all consult that
+ * table via PrivacyRegistry.
  */
 
 /**
@@ -62,17 +66,23 @@ fun Modifier.replayOcclude(blockGestures: Boolean = true): Modifier = composed {
     val token = remember { Any() }
 
     // Register on each onGloballyPositioned callback so scrolling /
-    // animation moves keep the registered rect current.
+    // animation moves keep the registered rect current. Passing the
+    // hosting view lets the SDK take out the window's adjustPan scroll
+    // (the keyboard pushing the content up), which moves boundsInWindow
+    // without a new layout. Edges are rounded outward so a fractional
+    // edge pixel isn't left uncovered.
+    val view = LocalView.current
     val positionMod = Modifier.onGloballyPositioned { coords ->
         val r = coords.boundsInWindow()
         ComposeBridge.registerOccludedBounds(
             token,
             Rect(
-                r.left.toInt(),
-                r.top.toInt(),
-                r.right.toInt(),
-                r.bottom.toInt(),
+                floor(r.left).toInt(),
+                floor(r.top).toInt(),
+                ceil(r.right).toInt(),
+                ceil(r.bottom).toInt(),
             ),
+            view,
         )
     }
 

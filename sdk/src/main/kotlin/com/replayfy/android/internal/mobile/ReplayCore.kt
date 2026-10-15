@@ -13,6 +13,7 @@ import com.replayfy.android.internal.console.ConsoleCapture
 import com.replayfy.android.internal.crash.CrashHandler
 import com.replayfy.android.internal.crash.NativeCrashHandler
 import com.replayfy.android.internal.privacy.PrivacyRegistry
+import com.replayfy.android.internal.privacy.WebViewMaskScanner
 import org.json.JSONObject
 import java.io.File
 import java.lang.ref.WeakReference
@@ -46,11 +47,25 @@ class ReplayCore internal constructor() {
     private var transport: MobileTransport? = null
     private var collector: MobileCollector? = null
     private var screenshots: MobileScreenshots? = null
+    // The session's WebView password scan (see WebViewMaskScanner).
+    private var webViewMasks: WebViewMaskScanner? = null
+    // The WebViews the privacy walk met in this capture tick, for the WebView
+    // scan that follows it in the same tick. Set on the main thread once the
+    // whole lookup has succeeded, handed over (and dropped) by that scan, and
+    // held weakly: a tick whose frame never reaches the scan (a lookup that
+    // throws, a session that ends) can't keep a WebView, or its Activity.
+    @Volatile private var walkedWebViews: List<WeakReference<android.webkit.WebView>> = emptyList()
+    // The masks a host SDK (React Native, Flutter) added to the last frame,
+    // in frame coordinates: typed values check them too.
+    @Volatile private var lastHostMasks: List<Rect> = emptyList()
     private var touch: MobileTouchCapture? = null
     // Opt-in text-input observation (Replay.addObservedInput) — reports an
     // observed field's value on editing-end. Always live (not tied to a single
     // start); sendInput's enqueue gates on recording state.
-    private val input = MobileInputCapture { value, masked, label -> sendInput(value, masked, label) }
+    private val input = MobileInputCapture(
+        onInput = { value, masked, label -> sendInput(value, masked, label) },
+        hostMasks = { lastHostMasks },
+    )
     private var perf: MobilePerfMonitor? = null
     private var consoleCapture: ConsoleCapture? = null
     // Retained from the first start() so startNewSession() can restart cleanly.
@@ -315,6 +330,12 @@ class ReplayCore internal constructor() {
                 // config still applies when the server is silent).
                 captureNetworkHeaders = resp.captureNetworkHeaders ?: config.captureHeaders
                 captureNetworkBodies = resp.captureNetworkBodies ?: config.captureBodies
+                // The dashboard's "always mask input values". Set before the
+                // screenshotter exists, so the first frame is already covered;
+                // a /start without it clears it (switched off on the
+                // dashboard). Its own flag, OR-ed with the app's
+                // occludeAllTextFields: the dashboard can only add masking.
+                PrivacyRegistry.remoteOccludeAllTextFields = resp.occludeAllTextFields ?: false
 
                 // Wire screenshot privacy masking to the PrivacyRegistry — the
                 // same collectors the legacy capture path consults. Without this
@@ -324,33 +345,60 @@ class ReplayCore internal constructor() {
                 // Invoked once per frame on the capture (main) thread, so the
                 // View-tree walk is safe.
                 privacyRectsProvider = provider@{
+                    walkedWebViews = emptyList()
                     val root = currentActivity?.window?.decorView ?: return@provider emptyList()
                     val style = PrivacyRegistry.maskStyle
                     if (PrivacyRegistry.occludeAllScreen) {
-                        // Whole-screen occlude (occludeSensitiveScreen): one box over
-                        // the whole decor view. Drain any pending bridge rects so they
-                        // don't bleed into a later non-full-screen frame.
+                        // Whole-screen occlude (occludeSensitiveScreen): one solid box
+                        // over the whole decor view, whatever the global style (the
+                        // reference tracker paints it opaque). Drain any pending
+                        // bridge rects so they don't bleed into a later
+                        // non-full-screen frame.
                         PrivacyRegistry.consumePendingFrameRects()
                         return@provider listOf(
-                            com.replayfy.android.MaskRect(Rect(0, 0, root.width, root.height), style))
+                            com.replayfy.android.MaskRect(
+                                Rect(0, 0, root.width, root.height),
+                                com.replayfy.android.ReplayMaskStyle.OVERLAY,
+                            ),
+                        )
                     }
-                    // Native/bulk sources render with the global style; the bridge
-                    // rects (React Native / Flutter) carry their own per-region style.
-                    (PrivacyRegistry.sensitiveBounds(root) +
-                        PrivacyRegistry.bulkBounds(root) +
-                        PrivacyRegistry.composeBoundsRelativeTo(root))
-                        .map { com.replayfy.android.MaskRect(it, style) } +
-                        PrivacyRegistry.consumePendingFrameRects() +
-                        externalPrivacyRectsProvider()
+                    // Native sources render with the global style, except the
+                    // auto-masked fields, which bulkMaskRects always paints solid;
+                    // the bridge rects (React Native / Flutter) carry their own
+                    // per-region style. The same walk collects the WebViews for
+                    // the WebView scan below.
+                    val webViews = ArrayList<android.webkit.WebView>()
+                    val native = PrivacyRegistry.sensitiveBounds(root).map { com.replayfy.android.MaskRect(it, style) } +
+                        PrivacyRegistry.bulkMaskRects(root, style, webViews) +
+                        PrivacyRegistry.composeBoundsRelativeTo(root).map { com.replayfy.android.MaskRect(it, style) }
+                    val host = PrivacyRegistry.consumePendingFrameRects() + externalPrivacyRectsProvider()
+                    lastHostMasks = host.map { it.rect }
+                    walkedWebViews = webViews.map { WeakReference(it) }
+                    // The native rects are in the decor's coordinates; the frame
+                    // is the window's surface, which shows the content moved up
+                    // while the window is panned for the keyboard (adjustPan).
+                    // The host's rects are passed through as they come.
+                    PrivacyRegistry.inFrame(native, root) + host
                 }
 
                 val collector = MobileCollector(transport, late)
+                val webViewMasks = WebViewMaskScanner()
                 val screenshots = MobileScreenshots(
                     transport,
                     activityProvider = { currentActivity },
                     privacyRects = { privacyRectsProvider() },
                     // Host-fed capture (Flutter) must never start the native timer.
                     nativeCapture = config.captureSnapshotPixels,
+                    // Password fields inside the WebViews the walk above found
+                    // (always on, as in the reference tracker). On the main
+                    // thread, right after privacyRects in the same tick. The
+                    // whole-screen cover already hides them.
+                    webViewRects = { decor ->
+                        val found = walkedWebViews.mapNotNull { it.get() }
+                        walkedWebViews = emptyList()
+                        if (PrivacyRegistry.occludeAllScreen) null
+                        else webViewMasks.begin(decor, found, PrivacyRegistry.textFieldsOccluded)
+                    },
                 ).apply { setSettings(resp.fps, resp.quality) }
                 val touch = MobileTouchCapture { label, x, y, kind, direction ->
                     // kind ∈ tap / swipe / long_press — routed to click / swipe /
@@ -362,6 +410,7 @@ class ReplayCore internal constructor() {
 
                 this.collector = collector
                 this.screenshots = screenshots
+                this.webViewMasks = webViewMasks
                 this.touch = touch
                 this.perf = perf
 
@@ -520,6 +569,11 @@ class ReplayCore internal constructor() {
         sessionGeneration++
         val ended = EndedSession(sessionId, screenshots, perf, consoleCapture, collector)
         screenshots = null
+        // What the WebView scan remembers is the session's: dropped with it.
+        webViewMasks?.clear()
+        webViewMasks = null
+        walkedWebViews = emptyList()
+        lastHostMasks = emptyList()
         perf = null
         consoleCapture = null
         collector = null
@@ -594,7 +648,16 @@ class ReplayCore internal constructor() {
         // process (and Flutter's capture timer) running there, and frames of
         // a screen nobody sees only stretch the replay.
         if (framesHeld || inBackground) return
-        screenshots?.submitFrame(png, rects)
+        val shots = screenshots ?: return
+        // The native guards apply to host frames too, whatever rects the host
+        // sent: a FLAG_SECURE window records black, as native frames do, and
+        // occludeSensitiveScreen replaces the frame with one solid box.
+        val cover = when {
+            PrivacyRegistry.isSecureWindow(currentActivity?.window) -> android.graphics.Color.BLACK
+            PrivacyRegistry.occludeAllScreen -> MobileScreenshots.MASK_COLOR
+            else -> null
+        }
+        shots.submitFrame(png, rects, cover)
     }
 
     /** Toggle auto screen-name tagging (Activity lifecycle) at runtime. */
@@ -621,6 +684,8 @@ class ReplayCore internal constructor() {
 
     /** The live session's frame buffer and message queue. For tests. */
     internal val liveScreenshots: MobileScreenshots? get() = screenshots
+    /** WebViews a privacy lookup left for the WebView scan. For tests. */
+    internal val pendingWebViewCount: Int get() = walkedWebViews.size
     internal val liveCollector: MobileCollector? get() = collector
 
     /** Block until the /start work queued so far has run. For tests. */
@@ -651,6 +716,14 @@ class ReplayCore internal constructor() {
         enqueue(MobileWire.swipe(label, x, y, direction, now()))
     fun sendInput(value: String, masked: Boolean, label: String) =
         enqueue(MobileWire.input(value, masked, label, now()))
+
+    /** Whether a host-reported input ([com.replayfy.android.Replay.trackInput],
+     *  React Native / Flutter) must be masked by a rule the host can't see:
+     *  every text field occluded (by the app or the dashboard), the whole
+     *  screen occluded, or a FLAG_SECURE window in front. */
+    fun hostInputMasked(): Boolean =
+        PrivacyRegistry.textFieldsOccluded || PrivacyRegistry.occludeAllScreen ||
+            PrivacyRegistry.isSecureWindow(currentActivity?.window)
 
     /** Opt an [android.widget.EditText] into input recording (reports on editing-end). */
     fun observeInput(editText: android.widget.EditText) = input.observe(editText)

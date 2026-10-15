@@ -13,3 +13,12 @@
 # Internal classes referenced by reflection (lifecycle observer, etc.).
 # Once we add the tap tracker that uses WindowManagerGlobal reflection,
 # we'll add the corresponding -keep rules here.
+
+# WorkManager (which schedules the background uploads) builds its Room
+# database reflectively, from the generated WorkDatabase_Impl. The rule
+# Room 2.5 ships (the version WorkManager 2.9 brings) keeps that class but not
+# its constructor, and R8 full mode (the default from AGP 8) then removes the
+# constructor: a minified release build crashed at startup with "Failed to
+# create an instance of class androidx.work.impl.WorkDatabase". Room 2.6+
+# ships this same rule.
+-keep class * extends androidx.room.RoomDatabase { <init>(); }

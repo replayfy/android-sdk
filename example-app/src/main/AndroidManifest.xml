@@ -31,6 +31,12 @@
         <activity
             android:name=".GameActivity"
             android:exported="false" />
+        <!-- Privacy-masking e2e screen (scripts/e2e-privacy.sh). adjustPan:
+             the keyboard opening for its bottom field pans the window. -->
+        <activity
+            android:name=".PrivacyActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustPan" />
     </application>
 
 </manifest>

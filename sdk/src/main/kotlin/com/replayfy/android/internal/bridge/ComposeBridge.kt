@@ -1,6 +1,7 @@
 package com.replayfy.android.internal.bridge
 
 import android.graphics.Rect
+import android.view.View
 import com.replayfy.android.internal.privacy.PrivacyRegistry
 
 /**
@@ -26,9 +27,22 @@ object ComposeBridge {
     /** Register Compose-composable bounds (window-relative). Called
      *  from `Modifier.replayOcclude`'s `onGloballyPositioned` callback.
      *  Token identifies the composable so updates replace rather than
-     *  grow the registry. */
+     *  grow the registry. Kept as they are: right while the window isn't
+     *  panned for the keyboard. The overload taking the composable's
+     *  [View] is right in every case. */
     fun registerOccludedBounds(token: Any, rectInWindow: Rect) {
         PrivacyRegistry.addComposeBounds(token, rectInWindow)
+    }
+
+    /** [registerOccludedBounds] for a composable shown by [view] (its
+     *  AndroidComposeView). The window's adjustPan scroll at this moment is
+     *  taken out, so the bounds are kept in the window content's own
+     *  coordinates: the keyboard's pan moves boundsInWindow without a new
+     *  layout, so window bounds registered before it changes would be off
+     *  by the pan in later frames. */
+    fun registerOccludedBounds(token: Any, rectInWindow: Rect, view: View) {
+        val decor = IntArray(2).also { view.rootView.getLocationInWindow(it) }
+        PrivacyRegistry.addComposeBounds(token, Rect(rectInWindow).apply { offset(-decor[0], -decor[1]) })
     }
 
     /** Unregister. Called from the modifier's

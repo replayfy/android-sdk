@@ -139,7 +139,9 @@ object Replay {
      * Flutter plugin disables native capture and ships frames here instead.
      * [rects] are the occlusion regions (developer `ReplayMask` bounds in the
      * PNG's pixel coords) the encoder masks. [ts] is the capture epoch-ms
-     * (reserved; the archive timestamps on receipt).
+     * (reserved; the archive timestamps on receipt). While
+     * [occludeSensitiveScreen] is on the frame is one solid box, and while the
+     * Activity's window is FLAG_SECURE it is black, whatever [rects] say.
      */
     fun reportFrame(png: ByteArray, ts: Long, rects: List<MaskRect> = emptyList()) {
         ReplayCore.shared.submitFrame(png, rects)
@@ -233,10 +235,13 @@ object Replay {
 
     /**
      * Observe a text field so its value is recorded on the session timeline
-     * when editing ends (on focus-loss, not per keystroke). Password-type
-     * fields report a masked placeholder, never the typed text, and the
-     * field's hint is used as the label. Inputs are opt-in per field — never
-     * captured globally. The field's existing focus listener is preserved.
+     * when editing ends (on focus-loss, not per keystroke). A field masked in
+     * the recording (password, card and one-time-code fields, every field
+     * under [occludeAllTextFields] or the dashboard's "always mask input
+     * values", privacy views, a FLAG_SECURE window) reports a masked
+     * placeholder, never the typed text, and the field's hint is used as the
+     * label. Inputs are opt-in per field — never captured globally. The
+     * field's existing focus listener is preserved.
      */
     @JvmStatic
     fun addObservedInput(editText: EditText) {
@@ -248,11 +253,15 @@ object Replay {
      * own text widgets (React Native / Flutter), where there's no native
      * [EditText] to [addObservedInput]. Pass `masked = true` for sensitive
      * fields — the value is dropped (recorded as "***") and never leaves the
-     * device.
+     * device. It is also masked, whatever `masked` says, while every text
+     * field is occluded ([occludeAllTextFields] or the dashboard's "always
+     * mask input values"), the whole screen is occluded, or a FLAG_SECURE
+     * window is in front.
      */
     @JvmStatic
     fun trackInput(label: String, value: String, masked: Boolean) {
-        ReplayCore.shared.sendInput(if (masked) "***" else value, masked, label)
+        val hidden = masked || ReplayCore.shared.hostInputMasked()
+        ReplayCore.shared.sendInput(if (hidden) "***" else value, hidden, label)
     }
 
     /**
@@ -402,6 +411,11 @@ object Replay {
      * [addPrivacyView]. Useful default-on PII protection when the
      * app routinely handles sensitive input.
      *
+     * Password, card-number / security-code / expiry and one-time-code
+     * fields are masked whatever this is set to. The dashboard's "always
+     * mask input values" also masks every field, and `false` here doesn't
+     * undo it.
+     *
      * Mirrors the reference mobile SDK's `occludeAllTextFields(boolean)`.
      */
     @JvmStatic
@@ -425,7 +439,7 @@ object Replay {
 
     /**
      * Register a [View] subclass for occlusion — every instance
-     * (including subclasses) on screen gets the stripe overlay.
+     * (including subclasses) on screen is masked.
      * Goes beyond the bulk text-fields / text-views flags: use this
      * when the app has custom widgets (e.g. CreditCardInputView,
      * MedicalRecordCard) that should be default-occluded across
@@ -452,10 +466,11 @@ object Replay {
     }
 
     /**
-     * Paint over the ENTIRE captured snapshot with the diagonal-
-     * stripe occlusion overlay. Nuclear option for screens where
-     * the customer doesn't want ANY pixel data to leave the device
-     * (e.g. health records, banking pin pad).
+     * Cover the ENTIRE captured frame with one solid box, whatever
+     * [setMaskStyle] says. Nuclear option for screens where the
+     * customer doesn't want ANY pixel data to leave the device
+     * (e.g. health records, banking pin pad). Also covers the
+     * frames a host SDK reports ([reportFrame]).
      *
      * Mirrors the reference mobile SDK's `occludeSensitiveScreen(boolean)`. Set false
      * to restore normal capture.
@@ -467,7 +482,7 @@ object Replay {
     }
 
     /**
-     * Paint the diagonal-stripe overlay over a set of [Rect] regions
+     * Mask a set of [Rect] regions (in the [setMaskStyle] style)
      * on the NEXT snapshot only. Entry point for cross-platform
      * SDK bridges (React Native, Flutter) whose components don't
      * have native [View] references — the bridge calculates rects
@@ -499,10 +514,13 @@ object Replay {
             rects.map { com.replayfy.android.MaskRect(it, style) })
     }
 
-    /** The default render style for masked regions — BLUR blurs the pixels,
-     *  OVERLAY paints a solid box. Applies to addPrivacyView, occludeAll*, the
-     *  whole-screen overlay, and any occludeRectsOnNextFrame call that doesn't
-     *  pass its own style. Default BLUR. */
+    /** The default render style for masked regions — OVERLAY (the default)
+     *  paints a solid box, BLUR blurs the pixels, PIXELATE turns them into
+     *  coarse blocks. Applies to addPrivacyView, occludeAllTextFields,
+     *  occludeAllTextView, applyOcclusion, Compose `replayOcclude` and any
+     *  occludeRectsOnNextFrame call that doesn't pass its own style. The
+     *  fields masked automatically (password, card, one-time code), the
+     *  whole-screen cover and FLAG_SECURE frames are always solid. */
     @JvmStatic
     fun setMaskStyle(style: com.replayfy.android.ReplayMaskStyle) {
         com.replayfy.android.internal.privacy.PrivacyRegistry.maskStyle = style

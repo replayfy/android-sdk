@@ -3,6 +3,13 @@ package com.replayfy.android.internal.privacy
 import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
+import android.view.Window
+import android.view.WindowManager
+import android.webkit.WebView
+import android.widget.EditText
+import android.widget.TextView
+import com.replayfy.android.MaskRect
+import com.replayfy.android.ReplayMaskStyle
 import java.util.Collections
 import java.util.WeakHashMap
 
@@ -55,7 +62,7 @@ internal object PrivacyRegistry {
     //                           Button, EditText) is treated as sensitive
     //                           (anything that DISPLAYS text)
     //   occludeAllScreen      → whole captured snapshot is painted over
-    //                           with the diagonal-stripe overlay
+    //                           with one solid box
     //
     // Flags are checked in isSensitive() + BitmapCapture's overlay
     // pass; setting them mid-session takes effect on the NEXT snapshot.
@@ -64,12 +71,23 @@ internal object PrivacyRegistry {
     @Volatile var occludeAllTextViews: Boolean = false
     @Volatile var occludeAllScreen: Boolean = false
 
+    /** The dashboard's "always mask input values", from every /v1/mobile/start
+     *  (a start without it clears it). OR-ed with the app's
+     *  [occludeAllTextFields]: neither one can clear the other, so the
+     *  dashboard can only add masking. */
+    @Volatile var remoteOccludeAllTextFields: Boolean = false
+
+    /** Every EditText is masked: the app or the dashboard asked for it. */
+    val textFieldsOccluded: Boolean
+        get() = occludeAllTextFields || remoteOccludeAllTextFields
+
     // Default render style for masked regions that don't carry their own
-    // (addPrivacyView, occludeAll*, applyOcclusion, the whole-screen overlay).
-    // BLUR blurs the pixels; OVERLAY paints a solid box. Per-region styles
-    // (React Native / Flutter mask widgets) override this on their own rects.
-    @Volatile var maskStyle: com.replayfy.android.ReplayMaskStyle =
-        com.replayfy.android.ReplayMaskStyle.BLUR
+    // (addPrivacyView, occludeAll*, applyOcclusion, occludeRectsOnNextFrame).
+    // OVERLAY (the default) paints a solid box, as the reference tracker
+    // does; BLUR / PIXELATE obscure the pixels. Per-region styles (React
+    // Native / Flutter mask widgets) override this on their own rects.
+    // Auto-masked fields and the whole-screen cover are always solid.
+    @Volatile var maskStyle: ReplayMaskStyle = ReplayMaskStyle.OVERLAY
     /** Downscale factor for BLUR regions — smaller = stronger blur. */
     @Volatile var blurDownscale: Int = 12
 
@@ -165,10 +183,18 @@ internal object PrivacyRegistry {
     }
 
     /**
-     * Whether the view itself OR any ancestor (via parent chain) is
-     * in the registry. Catches the common case where the customer
-     * marks a ViewGroup (e.g. the LinearLayout for the payment
-     * method row) and expects every descendant to inherit the mark.
+     * Whether a privacy rule masks [view] in recorded frames: the view itself
+     * OR any ancestor (via parent chain) is in the registry or an occluded
+     * class, a bulk flag covers it, or it is an always-sensitive field
+     * ([SensitiveInputRules]). Catches the common case where the customer
+     * marks a ViewGroup (e.g. the LinearLayout for the payment method row)
+     * and expects every descendant to inherit the mark.
+     *
+     * Typed values and tap labels consult this, so a view a rule masks never
+     * ships its text by another route. A FLAG_SECURE window
+     * ([isSecureWindow]) is not one of these rules: its frames are black, but
+     * its taps keep their labels, as the reference tracker's do. Typed values
+     * check it on their own.
      */
     fun isSensitive(view: View): Boolean = synchronized(lock) {
         // Whole-screen overlay → every view is sensitive. Cheap
@@ -179,145 +205,276 @@ internal object PrivacyRegistry {
         // textFields flag is the narrower opt-in for cases where
         // the customer wants to hide ONLY user-typed content
         // (passwords, credit cards) without redacting labels +
-        // buttons.
-        if (occludeAllTextFields && view is android.widget.EditText) return true
-        if (occludeAllTextViews && view is android.widget.TextView) return true
-        // Per-class occlusion (applyOcclusion). Cheap when the class
-        // set is empty (most apps).
+        // buttons. Password / card / one-time-code fields are always
+        // masked.
+        if (view is EditText && SensitiveInputRules.isSensitiveEditText(view, textFieldsOccluded)) return true
+        if (occludeAllTextViews && view is TextView) return true
+        // Per-class occlusion (applyOcclusion) and registered views, on the
+        // view or an ancestor: frames mask an occluded class's whole subtree.
         if (matchesOccludedClass(view)) return true
         if (table.containsKey(view)) return true
         var parent = view.parent
         while (parent != null) {
-            if (parent is View && table.containsKey(parent)) return true
+            if (parent is View && (table.containsKey(parent) || matchesOccludedClass(parent))) return true
             parent = parent.parent
         }
         return false
+    }
+
+    /** Whether FLAG_SECURE is set on the window [view] belongs to. The window
+     *  attributes are the root view's layout params once it is attached. */
+    fun isSecureWindow(view: View): Boolean =
+        ((view.rootView?.layoutParams as? WindowManager.LayoutParams)?.flags ?: 0) and
+            WindowManager.LayoutParams.FLAG_SECURE != 0
+
+    /** Whether FLAG_SECURE is set on [window], by its attributes or by its
+     *  decor view's (which follow the attributes once attached). */
+    fun isSecureWindow(window: Window?): Boolean {
+        if (window == null) return false
+        if ((window.attributes?.flags ?: 0) and WindowManager.LayoutParams.FLAG_SECURE != 0) return true
+        return window.peekDecorView()?.let { isSecureWindow(it) } ?: false
     }
 
     /**
      * Enumerate ALL views in the [root] tree whose class matches a
      * currently-enabled bulk-privacy flag (EditText if
      * `occludeAllTextFields`, TextView if `occludeAllTextViews`),
-     * a registered occluded class, OR is a password [EditText].
-     * Used by BitmapCapture to paint stripe overlays over the
-     * matching regions in the captured bitmap.
+     * a registered occluded class, OR an always-sensitive field
+     * ([SensitiveInputRules]). Rects are in [root]'s coordinates.
+     *
+     * Kept for the legacy capture path; the frames screenshotter uses
+     * [bulkMaskRects], which also carries each rect's render style.
+     */
+    fun bulkBounds(root: View): List<Rect> = bulkMaskRects(root, maskStyle).map { it.rect }
+
+    /**
+     * [bulkBounds] with each rect's render style: always-sensitive fields
+     * (password, card, one-time code) are always [ReplayMaskStyle.OVERLAY],
+     * as the reference tracker paints them solid (a blur can still show a
+     * password's length); everything else gets [style]. When [webViews] is
+     * given, every WebView the walk meets is added to it, so the same
+     * traversal finds them.
      *
      * Walks the tree once; cost is O(views-in-tree) per snapshot
      * which is the same order as ViewTreeSerializer's tree-walk
      * (negligible vs the bitmap-encode cost). Always walks — password
-     * fields are masked unconditionally (see [isPasswordField]), so we
-     * can't early-return even when no bulk flag / class is set.
+     * fields are masked unconditionally, so we can't early-return even
+     * when no bulk flag / class is set. No cap on the number of fields.
      */
-    fun bulkBounds(root: View): List<Rect> {
-        val wantFields = occludeAllTextFields
-        val wantViews = occludeAllTextViews
-        val hasClassFilter = occludedClasses.isNotEmpty()
-        val out = ArrayList<Rect>()
-        val rootLoc = IntArray(2).also { root.getLocationOnScreen(it) }
-        walkBulk(root, rootLoc, wantFields, wantViews, hasClassFilter, out)
+    fun bulkMaskRects(
+        root: View,
+        style: ReplayMaskStyle,
+        webViews: MutableList<WebView>? = null,
+    ): List<MaskRect> {
+        val out = ArrayList<MaskRect>()
+        if (!root.isShown) return out
+        val walk = BulkWalk(
+            root = root,
+            wantFields = textFieldsOccluded,
+            wantViews = occludeAllTextViews,
+            hasClassFilter = occludedClasses.isNotEmpty(),
+            style = style,
+            out = out,
+            webViews = webViews,
+        )
+        walkBulk(root, walk, null)
         return out
     }
 
-    private fun walkBulk(
-        view: View,
-        rootLoc: IntArray,
-        wantFields: Boolean,
-        wantViews: Boolean,
-        hasClassFilter: Boolean,
-        out: MutableList<Rect>,
-    ) {
-        if (!view.isShown || view.width <= 0 || view.height <= 0) return
-        val matches = (wantFields && view is android.widget.EditText) ||
-            // EditText extends TextView; if the customer enabled
-            // both flags we'd add the same rect twice. The wantFields
-            // branch handles EditText; wantViews picks up the rest.
-            (wantViews && view is android.widget.TextView &&
-                view !is android.widget.EditText) ||
+    /** One [bulkMaskRects] traversal's settings and output. */
+    private class BulkWalk(
+        val root: View,
+        val wantFields: Boolean,
+        val wantViews: Boolean,
+        val hasClassFilter: Boolean,
+        val style: ReplayMaskStyle,
+        val out: MutableList<MaskRect>,
+        val webViews: MutableList<WebView>?,
+    )
+
+    /** Below a view whose legacy Animation runs: matches there are masked by
+     *  [box], where the animated drawing stays (null: it shows nothing). */
+    private class Moving(val box: Rect?)
+
+    private fun walkBulk(view: View, walk: BulkWalk, moving: Moving?) {
+        // The walk starts at a shown root, so a visible view here is shown.
+        // No size prune: a zero-size parent that doesn't clip can still draw
+        // its children.
+        if (view.visibility != View.VISIBLE) return
+        // The outermost animated view decides where its subtree can draw.
+        val under = moving ?: if (isAnimating(view)) Moving(animatedBox(walk.root, view)) else null
+        // Collected, and still walked into: a native view placed inside a
+        // WebView is masked like any other.
+        if (view is WebView) walk.webViews?.add(view)
+        // Password / card / one-time-code inputs are ALWAYS masked,
+        // regardless of the occludeAll* flags.
+        val auto = view is EditText && SensitiveInputRules.isSensitiveEditText(view, false)
+        val matches = auto ||
+            (walk.wantFields && view is EditText) ||
+            // occludeAllTextView masks everything that shows text, input
+            // fields included (EditText extends TextView), as isSensitive
+            // does. One test per view, so a field both flags cover still
+            // gives one rect.
+            (walk.wantViews && view is TextView) ||
             // Per-class occlusion (applyOcclusion). Wrapped in the
             // cached flag so empty-set apps don't pay the
             // instanceof loop cost on every view.
-            (hasClassFilter && matchesOccludedClass(view)) ||
-            // Password inputs are ALWAYS masked, regardless of the
-            // occludeAll* flags — matches the web SDK's always-on
-            // password protection. Cheap: the EditText instanceof
-            // check short-circuits for every non-input view.
-            isPasswordField(view)
+            (walk.hasClassFilter && matchesOccludedClass(view))
         if (matches) {
-            val loc = IntArray(2).also { view.getLocationOnScreen(it) }
-            out.add(
-                Rect(
-                    loc[0] - rootLoc[0],
-                    loc[1] - rootLoc[1],
-                    loc[0] - rootLoc[0] + view.width,
-                    loc[1] - rootLoc[1] + view.height,
-                ),
-            )
-            // Don't recurse — text widgets don't contain other
-            // text widgets meaningfully, and stopping here keeps
-            // the bounds list small.
+            val style = if (auto) ReplayMaskStyle.OVERLAY else walk.style
+            if (under == null) {
+                visibleRectIn(walk.root, view)?.let { walk.out.add(MaskRect(it, style)) }
+            } else {
+                under.box?.let { box ->
+                    val mask = MaskRect(Rect(box), style)
+                    if (mask !in walk.out) walk.out.add(mask)
+                }
+            }
+            // Don't recurse — the rect covers the subtree, and text
+            // widgets don't contain other text widgets meaningfully.
             return
         }
-        if (view is android.view.ViewGroup) {
+        if (view is ViewGroup) {
             for (i in 0 until view.childCount) {
                 val child = view.getChildAt(i) ?: continue
-                walkBulk(child, rootLoc, wantFields, wantViews, hasClassFilter, out)
+                walkBulk(child, walk, under)
             }
         }
     }
 
     /**
-     * Whether [view] is an [android.widget.EditText] configured for
-     * password entry. Such fields are masked unconditionally —
-     * independent of the occludeAll* flags — so the captured frame
-     * never carries the typed secret, even before the customer wires
-     * any privacy API. Matches the web SDK's always-on password
-     * masking and the iOS `isSecureTextEntry` default.
-     *
-     * Reads the input-type CLASS + VARIATION bits (the variation is
-     * only meaningful within its class) so we don't mis-flag, e.g., a
-     * generic number field whose low bits coincide with the text-class
-     * password variation value.
+     * Where [v] shows on screen, in [root]'s coordinates, or null when it
+     * shows nothing. Same geometry the reference tracker uses: visible, same
+     * window, clipped global visible rect. The global visible rect is in the
+     * root view's (the decor's) coordinates and follows scrolling, clipping
+     * by ancestors and transforms (a view scaled up is masked at its drawn
+     * size, not its layout size). It leaves out the window's adjustPan
+     * scroll: see [frameOffset].
      */
-    private fun isPasswordField(view: View): Boolean {
-        if (view !is android.widget.EditText) return false
-        val type = view.inputType
-        val cls = type and android.text.InputType.TYPE_MASK_CLASS
-        val variation = type and android.text.InputType.TYPE_MASK_VARIATION
-        return when (cls) {
-            android.text.InputType.TYPE_CLASS_TEXT ->
-                variation == android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD ||
-                    variation == android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
-                    variation == android.text.InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
-            android.text.InputType.TYPE_CLASS_NUMBER ->
-                variation == android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
-            else -> false
+    private fun visibleRectIn(root: View, v: View): Rect? {
+        if (v.visibility != View.VISIBLE || !v.isShown) return null
+        if (v.rootView !== root.rootView) return null
+        val r = Rect()
+        if (!v.getGlobalVisibleRect(r) || r.isEmpty) return null
+        if (root !== root.rootView) {
+            val o = locationInDecor(root)
+            r.offset(-o[0], -o[1])
         }
+        return r
+    }
+
+    /** Whether a legacy view Animation (View.startAnimation, a Fragment's
+     *  anim-resource transition) moves [v]'s drawing: it runs, or it ended
+     *  and keeps its last frame (fillAfter). */
+    private fun isAnimating(v: View): Boolean {
+        val a = v.animation ?: return false
+        return !a.hasEnded() || a.fillAfter
+    }
+
+    /**
+     * Where [animating], whose legacy Animation runs, can draw, in [root]'s
+     * coordinates; null when that is nowhere on screen. Such an animation
+     * moves the pixels but not the view's geometry, so the visible rect of a
+     * view inside it says nothing about where it shows. Its drawing stays
+     * inside the nearest ancestor that its own parent clips to its bounds
+     * (clipChildren, on by default), so that ancestor's visible rect covers
+     * it; with no such ancestor, the whole [root].
+     */
+    private fun animatedBox(root: View, animating: View): Rect? {
+        var box: View = animating
+        while (box !== root) {
+            box = box.parent as? View ?: break
+            val holder = box.parent
+            if (holder is ViewGroup && holder.clipChildren) break
+        }
+        return visibleRectIn(root, if (box === animating) root else box)
+    }
+
+    /** The outermost view from [v] up to [root] whose legacy Animation moves
+     *  its drawing (see [isAnimating]), or null. */
+    private fun animatingAncestor(root: View, v: View): View? {
+        var found: View? = null
+        var cur: View? = v
+        while (cur != null) {
+            if (isAnimating(cur)) found = cur
+            if (cur === root) break
+            cur = cur.parent as? View
+        }
+        return found
     }
 
     /**
      * Enumerate currently-tracked views and return their bounds
      * relative to [root]. Used by BitmapCapture to know where to
-     * paint the overlay. Skips views that aren't shown / have zero
-     * size / aren't descendants of [root].
+     * paint the overlay. Skips views that aren't shown / show nothing /
+     * aren't descendants of [root]. A view moved by a legacy Animation is
+     * covered where that animation can draw it (see [animatedBox]).
      */
     fun sensitiveBounds(root: View): List<Rect> = synchronized(lock) {
         val out = ArrayList<Rect>()
-        val rootLoc = IntArray(2).also { root.getLocationOnScreen(it) }
         // Snapshot keys to avoid mutation during iteration (the
         // WeakHashMap can drop entries between iterator advance + read).
         val snapshot = ArrayList(table.keys)
         for (v in snapshot) {
             if (v == null) continue
-            if (!v.isShown) continue
-            if (v.width <= 0 || v.height <= 0) continue
             if (!isAncestorOf(root, v)) continue
-            val vLoc = IntArray(2).also { v.getLocationOnScreen(it) }
-            // Convert screen coords → root-relative coords.
-            val left = vLoc[0] - rootLoc[0]
-            val top = vLoc[1] - rootLoc[1]
-            out.add(Rect(left, top, left + v.width, top + v.height))
+            if (v.visibility != View.VISIBLE || !v.isShown) continue
+            val animating = animatingAncestor(root, v)
+            if (animating == null) {
+                visibleRectIn(root, v)?.let { out.add(it) }
+            } else {
+                animatedBox(root, animating)?.let { if (it !in out) out.add(it) }
+            }
         }
         return out
+    }
+
+    // -----------------------------------------------------------------
+    //  Frame coordinates
+    // -----------------------------------------------------------------
+    //
+    // The rects above are in the root view's (the decor's) own coordinates:
+    // the window's content as laid out. A recorded frame is the window's
+    // surface, which PixelCopy copies. The two differ while the window is
+    // panned for the keyboard (adjustPan): the content is drawn moved up by
+    // the pan, which the visible rects leave out, so a mask placed with them
+    // would land below the field it covers.
+
+    /**
+     * Where [decor]'s content shows in its window's surface, and so in a
+     * recorded frame: (0, 0), except while the window is panned for the
+     * keyboard (adjustPan), when it is (0, -pan). It is the decor's location
+     * in its window, which counts the pan.
+     */
+    fun frameOffset(decor: View): IntArray = IntArray(2).also { decor.getLocationInWindow(it) }
+
+    /** [rects], in [decor]'s coordinates, moved to where a recorded frame
+     *  shows them (see [frameOffset]). */
+    fun inFrame(rects: List<MaskRect>, decor: View): List<MaskRect> {
+        val o = frameOffset(decor)
+        if (o[0] == 0 && o[1] == 0) return rects
+        return rects.map { MaskRect(Rect(it.rect).apply { offset(o[0], o[1]) }, it.style) }
+    }
+
+    /** [v]'s top-left in its root view's (the decor's) coordinates: its
+     *  location in the window less the decor's, which drops the window's
+     *  adjustPan scroll. The space of the visible rects above, of the
+     *  Compose masks, and of the touches a Window.Callback sees. */
+    fun locationInDecor(v: View): IntArray {
+        val out = IntArray(2).also { v.getLocationInWindow(it) }
+        val decor = IntArray(2).also { v.rootView.getLocationInWindow(it) }
+        out[0] -= decor[0]
+        out[1] -= decor[1]
+        return out
+    }
+
+    /** Where [v] shows, in its root view's (the decor's) coordinates: its
+     *  clipped visible rect, or its laid-out bounds when it shows nothing. */
+    fun decorRectOf(v: View): Rect {
+        val r = Rect()
+        if (v.getGlobalVisibleRect(r) && !r.isEmpty) return r
+        val o = locationInDecor(v)
+        return Rect(o[0], o[1], o[0] + v.width, o[1] + v.height)
     }
 
     /** Walk up the child's parent chain checking if [root] is on it.
@@ -337,23 +494,26 @@ internal object PrivacyRegistry {
     //  Jetpack Compose support — Compose composables aren't Views,
     //  so the View-ancestor walk above won't catch
     //  Modifier.replayOcclude. The Compose wrapper registers the
-    //  composable's window-relative bounds keyed by an opaque token
+    //  composable's bounds in the decor's coordinates (its window
+    //  bounds less the window's adjustPan scroll, see
+    //  ComposeBridge.registerOccludedBounds) keyed by an opaque token
     //  and unregisters on dispose. TapTracker + ViewTreeSerializer
     //  + BitmapCapture all consult [isSensitiveAtPoint] / [composeBounds]
     //  in addition to the View-based checks.
     // -----------------------------------------------------------------
 
-    /** Window-relative rect for one Compose composable marked via
+    /** Decor-relative rect for one Compose composable marked via
      *  Modifier.replayOcclude. Keyed by an opaque token (typically
      *  the modifier's remembered instance) so the same composable
      *  can update its rect on re-layout without growing the table. */
     private val composeBounds: MutableMap<Any, Rect> =
         Collections.synchronizedMap(HashMap())
 
-    /** Register or update Compose-composable bounds. Called from
-     *  Modifier.replayOcclude's onGloballyPositioned callback. */
-    fun addComposeBounds(token: Any, rectInWindow: Rect) {
-        synchronized(lock) { composeBounds[token] = rectInWindow }
+    /** Register or update Compose-composable bounds, in the decor's
+     *  coordinates. Called from Modifier.replayOcclude's
+     *  onGloballyPositioned callback. */
+    fun addComposeBounds(token: Any, rectInDecor: Rect) {
+        synchronized(lock) { composeBounds[token] = rectInDecor }
     }
 
     /** Unregister. Called from the modifier's DisposableEffect.onDispose. */
@@ -361,36 +521,39 @@ internal object PrivacyRegistry {
         synchronized(lock) { composeBounds.remove(token) }
     }
 
-    /** Whether the given screen-relative point falls inside any
-     *  currently-registered Compose marker. Called by TapTracker at
-     *  tap time (after converting touch coords to window coords). */
-    fun isSensitiveAtPoint(xInWindow: Int, yInWindow: Int): Boolean =
+    /** Whether the given point, in the decor's coordinates (a touch's x/y
+     *  as a Window.Callback sees it), falls inside any currently-registered
+     *  Compose marker. Called by the tap trackers at tap time. */
+    fun isSensitiveAtPoint(xInDecor: Int, yInDecor: Int): Boolean =
         synchronized(lock) {
             for (rect in composeBounds.values) {
-                if (rect.contains(xInWindow, yInWindow)) return true
+                if (rect.contains(xInDecor, yInDecor)) return true
             }
             return false
         }
 
     /** Whether any registered Compose marker's bounds intersect the
-     *  given rect. Used by ViewTreeSerializer at snapshot time to
-     *  mark nodes whose painted region overlaps a Compose-occluded
-     *  composable. */
-    fun isSensitiveByBoundsIntersect(rectInWindow: Rect): Boolean =
+     *  given rect, in the decor's coordinates. Used by
+     *  ViewTreeSerializer at snapshot time to mark nodes whose painted
+     *  region overlaps a Compose-occluded composable, and by typed values
+     *  for a field under such a region. */
+    fun isSensitiveByBoundsIntersect(rectInDecor: Rect): Boolean =
         synchronized(lock) {
             for (rect in composeBounds.values) {
-                if (Rect.intersects(rect, rectInWindow)) return true
+                if (Rect.intersects(rect, rectInDecor)) return true
             }
             return false
         }
 
     /** Snapshot of all currently-registered Compose bounds in
-     *  root-relative coords (subtracting [root]'s window position).
-     *  Used by BitmapCapture to paint the diagonal-stripe overlay
-     *  over Compose-occluded regions in the captured PNG. */
+     *  root-relative coords. Used by the screenshotters to mask
+     *  Compose-occluded regions. The bounds are decor-relative, so they
+     *  are already [root]'s when it is the decor; another root subtracts
+     *  its own place in the decor. (Subtracting the root's screen
+     *  position shifted every mask in split-screen and floating windows.) */
     fun composeBoundsRelativeTo(root: View): List<Rect> = synchronized(lock) {
         if (composeBounds.isEmpty()) return emptyList()
-        val rootLoc = IntArray(2).also { root.getLocationOnScreen(it) }
+        val rootLoc = locationInDecor(root)
         val out = ArrayList<Rect>(composeBounds.size)
         for (rect in composeBounds.values) {
             out.add(Rect(

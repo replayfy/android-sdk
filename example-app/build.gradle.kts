@@ -17,6 +17,12 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.0.1"
+        // PrivacyActivity's ingest target for an E2E run, from the Gradle
+        // properties replayE2eApiKey / replayE2eApiHost (pass them as
+        // ORG_GRADLE_PROJECT_* env vars so a key never lands on a command
+        // line). Empty = the local defaults in PrivacyActivity.
+        buildConfigField("String", "REPLAY_E2E_API_KEY", "\"${providers.gradleProperty("replayE2eApiKey").getOrElse("")}\"")
+        buildConfigField("String", "REPLAY_E2E_API_HOST", "\"${providers.gradleProperty("replayE2eApiHost").getOrElse("")}\"")
     }
 
     buildTypes {

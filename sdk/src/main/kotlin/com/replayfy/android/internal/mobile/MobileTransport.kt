@@ -24,6 +24,9 @@ data class MobileStartResponse(
     // false ⇒ the server's sampling gate dropped this session; the SDK
     // must not record. Distinct from a null response (network failure).
     val record: Boolean = true,
+    // The dashboard's "always mask input values" (`privacy.occludeAllTextFields`).
+    // Null ⇒ the server didn't send it, which counts as off.
+    val occludeAllTextFields: Boolean? = null,
 )
 
 /**
@@ -77,6 +80,9 @@ class MobileTransport(host: String, private val projectKey: String) : MobileUplo
                 captureNetworkBodies = if (data.has("captureNetworkBodies")) data.getBoolean("captureNetworkBodies") else null,
                 // false ⇒ server sampling gate dropped this launch.
                 record = data.optBoolean("record", true),
+                occludeAllTextFields = data.optJSONObject("privacy")?.let {
+                    if (it.has("occludeAllTextFields")) it.optBoolean("occludeAllTextFields") else null
+                },
             )
             token = parsed.token
             parsed

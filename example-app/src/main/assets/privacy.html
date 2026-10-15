@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<style>
+  body { margin: 0; height: 3000px; background: #fff; font: 16px sans-serif; }
+  input, .box { position: absolute; left: 16px; width: 200px; height: 36px; border: 0; padding: 0; }
+  input { background: #f0f; }
+  #tx { background: #ff0; }
+</style>
+</head>
+<body>
+  <!-- Page for the privacy e2e (PrivacyActivity): the password input is
+       masked by the SDK's WebView scan, the text input is the control, and
+       the rr-block element is masked by its class. The page is tall, so a
+       swipe scrolls it; the inputs start low enough to stay in view after a
+       short scroll, so the mask's alignment can be checked there. Masked
+       content is magenta / cyan, the control yellow: a magenta or cyan pixel
+       in a frame is a leak. -->
+  <input id="pw" type="password" value="hunter2-secret" style="top: 96px">
+  <input id="tx" type="text" value="public text" style="top: 156px">
+  <div class="box rr-block" style="top: 216px; background: #0ff">blocked by class</div>
+</body>
+</html>
