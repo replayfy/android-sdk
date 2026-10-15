@@ -203,4 +203,32 @@ class RemoteMaskingStartTest {
 
         everyPixelNear(hostFrame(), 255)
     }
+
+    // ── Host-reported inputs (Replay.trackInput: React Native / Flutter) ──
+
+    @Test
+    fun aHostInputIsMaskedByTheRulesTheHostCannotSee() {
+        launch(config(nativeCapture = false))
+        assertFalse("nothing occluded", core.hostInputMasked())
+
+        PrivacyRegistry.remoteOccludeAllTextFields = true
+        assertTrue("dashboard force", core.hostInputMasked())
+        PrivacyRegistry.remoteOccludeAllTextFields = false
+
+        PrivacyRegistry.occludeAllTextFields = true
+        assertTrue("app occludeAllTextFields", core.hostInputMasked())
+        PrivacyRegistry.occludeAllTextFields = false
+
+        PrivacyRegistry.occludeAllScreen = true
+        assertTrue("whole screen occluded", core.hostInputMasked())
+        PrivacyRegistry.occludeAllScreen = false
+
+        assertFalse(core.hostInputMasked())
+    }
+
+    @Test
+    fun aHostInputIsMaskedUnderASecureWindow() {
+        launch(config(nativeCapture = false), SecureActivity::class.java)
+        assertTrue(core.hostInputMasked())
+    }
 }

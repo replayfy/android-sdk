@@ -253,11 +253,15 @@ object Replay {
      * own text widgets (React Native / Flutter), where there's no native
      * [EditText] to [addObservedInput]. Pass `masked = true` for sensitive
      * fields — the value is dropped (recorded as "***") and never leaves the
-     * device.
+     * device. It is also masked, whatever `masked` says, while every text
+     * field is occluded ([occludeAllTextFields] or the dashboard's "always
+     * mask input values"), the whole screen is occluded, or a FLAG_SECURE
+     * window is in front.
      */
     @JvmStatic
     fun trackInput(label: String, value: String, masked: Boolean) {
-        ReplayCore.shared.sendInput(if (masked) "***" else value, masked, label)
+        val hidden = masked || ReplayCore.shared.hostInputMasked()
+        ReplayCore.shared.sendInput(if (hidden) "***" else value, hidden, label)
     }
 
     /**

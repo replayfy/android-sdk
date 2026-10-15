@@ -10,6 +10,10 @@ could reach a recording around a mask.
 
 ### Changed
 
+- **`Replay.trackInput` follows the masking rules.** From React Native and
+  Flutter hosts it records `***` whenever the field would be covered by a rule the host can't see: every text field
+  occluded (by the app or the dashboard's "always mask input values"), the
+  whole screen occluded, or a FLAG_SECURE window in front.
 - **Screens of a `FLAG_SECURE` window record as black frames.** The SDK no
   longer copies or draws a secure window at all; it encodes a solid black frame
   of the same size instead. Before, a secure window's content could reach the

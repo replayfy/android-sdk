@@ -717,6 +717,14 @@ class ReplayCore internal constructor() {
     fun sendInput(value: String, masked: Boolean, label: String) =
         enqueue(MobileWire.input(value, masked, label, now()))
 
+    /** Whether a host-reported input ([com.replayfy.android.Replay.trackInput],
+     *  React Native / Flutter) must be masked by a rule the host can't see:
+     *  every text field occluded (by the app or the dashboard), the whole
+     *  screen occluded, or a FLAG_SECURE window in front. */
+    fun hostInputMasked(): Boolean =
+        PrivacyRegistry.textFieldsOccluded || PrivacyRegistry.occludeAllScreen ||
+            PrivacyRegistry.isSecureWindow(currentActivity?.window)
+
     /** Opt an [android.widget.EditText] into input recording (reports on editing-end). */
     fun observeInput(editText: android.widget.EditText) = input.observe(editText)
     fun sendPerformance(name: String, value: Long) =
