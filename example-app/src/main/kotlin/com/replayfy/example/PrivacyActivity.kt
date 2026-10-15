@@ -40,6 +40,22 @@ import org.json.JSONObject
  *   --ei REPLAY_SECURE_AFTER_SECS 20  → set FLAG_SECURE after N s (frames go black)
  *   --es REPLAY_AUTOCRASH jvm         → crash after REPLAY_CRASH_AFTER_SECS (default 30) s,
  *                                       which flushes the session through /late
+ *   --ez REPLAY_SCROLL_LAYOUT true    → the screen scrolls (a ScrollView, WebView 320dp tall,
+ *                                       a tall spacer below): overscroll at its edges
+ *   --ez REPLAY_APP_UNOCCLUDE true    → the app calls Replay.occludeAllTextFields(false)
+ *                                       right after init and again once the session
+ *                                       started: the dashboard's force must still win
+ *
+ * Colours: everything that must be masked is magenta (the page's rr-block
+ * element cyan), the unmasked controls are yellow. A magenta or cyan pixel in
+ * a recorded frame is a leak, wherever it is.
+ *
+ * Every field is opted into input recording (addObservedInput): a masked one
+ * must report "***". The header and the scaled privacy view are tap targets:
+ * a tap on the masked one must never be labelled with its text.
+ *
+ * The ingest target comes from BuildConfig (Gradle properties
+ * replayE2eApiKey / replayE2eApiHost), else the local defaults below.
  */
 class PrivacyActivity : AppCompatActivity() {
 
@@ -54,11 +70,18 @@ class PrivacyActivity : AppCompatActivity() {
         Replay.init(
             this,
             ReplayConfig(
-                apiKey = "rpl_pk_ef7e2fc8c7f952bcd0a69466e1a42a0625f9",
-                apiHost = "http://10.0.2.2:4000",
+                apiKey = BuildConfig.REPLAY_E2E_API_KEY.ifEmpty { "rpl_pk_ef7e2fc8c7f952bcd0a69466e1a42a0625f9" },
+                apiHost = BuildConfig.REPLAY_E2E_API_HOST.ifEmpty { "http://10.0.2.2:4000" },
                 captureSnapshotPixels = true,
             ),
         )
+        if (intent.getBooleanExtra("REPLAY_APP_UNOCCLUDE", false)) {
+            Replay.occludeAllTextFields(false)
+            handler.postDelayed({
+                Replay.occludeAllTextFields(false)
+                android.util.Log.i(TAG, "REPLAY_E2E_APP_UNOCCLUDE ${System.currentTimeMillis()}")
+            }, 4000)
+        }
         if (intent.getBooleanExtra("REPLAY_MASK_BLUR", false)) Replay.setMaskStyle(ReplayMaskStyle.BLUR)
         if (intent.getBooleanExtra("REPLAY_MASK_OVERLAY", false)) Replay.setMaskStyle(ReplayMaskStyle.OVERLAY)
         Replay.tagScreenName("Privacy")
@@ -73,13 +96,14 @@ class PrivacyActivity : AppCompatActivity() {
             if (name != null) tracked[name] = v
         }
         fun field(name: String, setup: EditText.() -> Unit) = EditText(this).apply {
-            setBackgroundColor(Color.YELLOW)
+            setBackgroundColor(if (name == "control") Color.YELLOW else Color.MAGENTA)
             setTextColor(Color.BLACK)
             hint = name
             setup()
             add(name, this)
+            Replay.addObservedInput(this)
         }
-        add(null, TextView(this).apply { text = "PRIVACY E2E"; setTextColor(Color.BLACK) }, 28)
+        add("header", TextView(this).apply { text = "PRIVACY E2E"; setTextColor(Color.BLACK); setOnClickListener { } }, 28)
         field("password") { inputType = 0x80081 } // textPassword|textNoSuggestions
         field("numberPassword") { inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD }
         field("transformation") {
@@ -94,10 +118,11 @@ class PrivacyActivity : AppCompatActivity() {
         field("control") { inputType = InputType.TYPE_CLASS_TEXT; setText("public text") }
         val scaled = TextView(this).apply {
             text = "SCALED 4111 1111"
-            setBackgroundColor(Color.YELLOW)
+            setBackgroundColor(Color.MAGENTA)
             setTextColor(Color.BLACK)
             scaleX = 1.5f
             scaleY = 1.5f
+            setOnClickListener { }
         }
         column.addView(scaled, LinearLayout.LayoutParams(dp(160), dp(32)).also { it.topMargin = dp(14); it.leftMargin = dp(60) })
         tracked["scaled"] = scaled
@@ -108,7 +133,12 @@ class PrivacyActivity : AppCompatActivity() {
             settings.javaScriptEnabled = true
             webViewClient = object : WebViewClient() {}
         }
-        column.addView(web, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).also { it.topMargin = dp(10) })
+        val scrolls = intent.getBooleanExtra("REPLAY_SCROLL_LAYOUT", false)
+        column.addView(
+            web,
+            if (scrolls) LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(320)).also { it.topMargin = dp(10) }
+            else LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).also { it.topMargin = dp(10) },
+        )
         tracked["web"] = web
         web.loadUrl("file:///android_asset/privacy.html")
 
@@ -117,7 +147,12 @@ class PrivacyActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_NUMBER
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) setAutofillHints("creditCardNumber")
         }
-        setContentView(column)
+        if (scrolls) {
+            column.addView(View(this), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(900)))
+            setContentView(android.widget.ScrollView(this).apply { addView(column) })
+        } else {
+            setContentView(column)
+        }
 
         handler.post(object : Runnable {
             override fun run() {
