@@ -115,7 +115,9 @@ class MobileTouchCapture(
                 val hit = root?.get()?.let { findViewAtPosition(it, ev.rawX, ev.rawY) }
                 // Drop taps on framework/system hosts (FlutterSurfaceView, …) —
                 // extractElementLabel returns null for those. ev.x/ev.y are
-                // window coordinates (a Window.Callback sees the window's events).
+                // in the decor's coordinates (a Window.Callback sees the
+                // window's events, with any adjustPan scroll already added
+                // back), where Compose masks are kept.
                 val label = extractElementLabel(hit, ev.x, ev.y) ?: return
                 onGesture(label, x, y, kind, direction(dx, dy))
             }
@@ -196,14 +198,15 @@ class MobileTouchCapture(
      * React Native's `accessibilityLabel` lands on Android. EditText uses its
      * hint, never the typed value (privacy).
      *
-     * A view masked in the frames (see [PrivacyRegistry.isSensitive], or a
-     * Compose `replayOcclude` region under the touch at window coordinates
-     * [xInWindow], [yInWindow]) never names a tap with what it shows: no text,
-     * no contentDescription, only the resource-id or class name. The
-     * reference tracker never names a gesture from an occluded view's text
-     * either.
+     * A view a privacy rule masks in the frames (see
+     * [PrivacyRegistry.isSensitive], or a Compose `replayOcclude` region under
+     * the touch at decor coordinates [xInDecor], [yInDecor]) never names a tap
+     * with what it shows: no text, no contentDescription, only the
+     * resource-id or class name. The reference tracker never names a gesture
+     * from an occluded view's text either. A FLAG_SECURE window records black
+     * frames but keeps its tap labels, as the reference tracker's do.
      */
-    private fun extractElementLabel(view: View?, xInWindow: Float, yInWindow: Float): String? {
+    private fun extractElementLabel(view: View?, xInDecor: Float, yInDecor: Float): String? {
         if (view == null) return "View"
         try {
             if (view.id != View.NO_ID) {
@@ -213,7 +216,7 @@ class MobileTouchCapture(
         } catch (_: Throwable) { /* unknown resource id */ }
         val masked = try {
             PrivacyRegistry.isSensitive(view) ||
-                PrivacyRegistry.isSensitiveAtPoint(xInWindow.toInt(), yInWindow.toInt())
+                PrivacyRegistry.isSensitiveAtPoint(xInDecor.toInt(), yInDecor.toInt())
         } catch (_: Throwable) {
             true // can't tell: never risk the text
         }

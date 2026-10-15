@@ -1,7 +1,9 @@
 package com.replayfy.android.internal.mobile
 
+import android.app.Activity
 import android.content.Context
 import android.webkit.WebView
+import org.robolectric.util.ReflectionHelpers
 import java.io.ByteArrayInputStream
 import java.util.zip.GZIPInputStream
 
@@ -19,6 +21,14 @@ internal open class LaidOutWebView(context: Context) : WebView(context) {
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         left = l; top = t; right = r; bottom = b
     }
+}
+
+/** Pan [activity]'s window up by [px], as adjustPan does while the keyboard is
+ *  up: the window's ViewRootImpl scrolls its drawing, which the views' own
+ *  geometry doesn't see, while their locations in the window and on screen
+ *  do. 0 undoes it. */
+internal fun panWindow(activity: Activity, px: Int) {
+    ReflectionHelpers.setField(activity.window.decorView.parent, "mCurScrollY", px)
 }
 
 /** Poll [condition] until it holds or [timeoutMs] passes (the drains run on

@@ -233,10 +233,10 @@ internal class TapTracker(
         //   (b) Compose point-intersection: catches the Compose
         //       Modifier.replayOcclude case where the marker isn't
         //       in the view tree at all.
-        // Tap coords get converted to window-relative before the
-        // point-intersection check because Compose registers
-        // bounds in window coords.
-        val winLoc = IntArray(2).also { view.getLocationInWindow(it) }
+        // Tap coords get converted to the decor's coordinates before
+        // the point-intersection check because Compose registers
+        // bounds there (window coords less any adjustPan scroll).
+        val winLoc = PrivacyRegistry.locationInDecor(view)
         val xInWindow = winLoc[0] + x.toInt()
         val yInWindow = winLoc[1] + y.toInt()
         val isSensitive = PrivacyRegistry.isSensitive(view) ||

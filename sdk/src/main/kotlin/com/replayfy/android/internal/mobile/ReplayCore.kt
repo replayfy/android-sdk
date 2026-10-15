@@ -50,14 +50,22 @@ class ReplayCore internal constructor() {
     // The session's WebView password scan (see WebViewMaskScanner).
     private var webViewMasks: WebViewMaskScanner? = null
     // The WebViews the privacy walk met in this capture tick, for the WebView
-    // scan that follows it in the same tick. Main thread only; handed over
-    // (and dropped) by that scan, so no WebView outlives its tick here.
-    private var walkedWebViews: List<android.webkit.WebView> = emptyList()
+    // scan that follows it in the same tick. Set on the main thread once the
+    // whole lookup has succeeded, handed over (and dropped) by that scan, and
+    // held weakly: a tick whose frame never reaches the scan (a lookup that
+    // throws, a session that ends) can't keep a WebView, or its Activity.
+    @Volatile private var walkedWebViews: List<WeakReference<android.webkit.WebView>> = emptyList()
+    // The masks a host SDK (React Native, Flutter) added to the last frame,
+    // in frame coordinates: typed values check them too.
+    @Volatile private var lastHostMasks: List<Rect> = emptyList()
     private var touch: MobileTouchCapture? = null
     // Opt-in text-input observation (Replay.addObservedInput) — reports an
     // observed field's value on editing-end. Always live (not tied to a single
     // start); sendInput's enqueue gates on recording state.
-    private val input = MobileInputCapture { value, masked, label -> sendInput(value, masked, label) }
+    private val input = MobileInputCapture(
+        onInput = { value, masked, label -> sendInput(value, masked, label) },
+        hostMasks = { lastHostMasks },
+    )
     private var perf: MobilePerfMonitor? = null
     private var consoleCapture: ConsoleCapture? = null
     // Retained from the first start() so startNewSession() can restart cleanly.
@@ -360,13 +368,17 @@ class ReplayCore internal constructor() {
                     // per-region style. The same walk collects the WebViews for
                     // the WebView scan below.
                     val webViews = ArrayList<android.webkit.WebView>()
-                    val bulk = PrivacyRegistry.bulkMaskRects(root, style, webViews)
-                    walkedWebViews = webViews
-                    PrivacyRegistry.sensitiveBounds(root).map { com.replayfy.android.MaskRect(it, style) } +
-                        bulk +
-                        PrivacyRegistry.composeBoundsRelativeTo(root).map { com.replayfy.android.MaskRect(it, style) } +
-                        PrivacyRegistry.consumePendingFrameRects() +
-                        externalPrivacyRectsProvider()
+                    val native = PrivacyRegistry.sensitiveBounds(root).map { com.replayfy.android.MaskRect(it, style) } +
+                        PrivacyRegistry.bulkMaskRects(root, style, webViews) +
+                        PrivacyRegistry.composeBoundsRelativeTo(root).map { com.replayfy.android.MaskRect(it, style) }
+                    val host = PrivacyRegistry.consumePendingFrameRects() + externalPrivacyRectsProvider()
+                    lastHostMasks = host.map { it.rect }
+                    walkedWebViews = webViews.map { WeakReference(it) }
+                    // The native rects are in the decor's coordinates; the frame
+                    // is the window's surface, which shows the content moved up
+                    // while the window is panned for the keyboard (adjustPan).
+                    // The host's rects are passed through as they come.
+                    PrivacyRegistry.inFrame(native, root) + host
                 }
 
                 val collector = MobileCollector(transport, late)
@@ -382,7 +394,7 @@ class ReplayCore internal constructor() {
                     // thread, right after privacyRects in the same tick. The
                     // whole-screen cover already hides them.
                     webViewRects = { decor ->
-                        val found = walkedWebViews
+                        val found = walkedWebViews.mapNotNull { it.get() }
                         walkedWebViews = emptyList()
                         if (PrivacyRegistry.occludeAllScreen) null
                         else webViewMasks.begin(decor, found, PrivacyRegistry.textFieldsOccluded)
@@ -560,6 +572,8 @@ class ReplayCore internal constructor() {
         // What the WebView scan remembers is the session's: dropped with it.
         webViewMasks?.clear()
         webViewMasks = null
+        walkedWebViews = emptyList()
+        lastHostMasks = emptyList()
         perf = null
         consoleCapture = null
         collector = null
@@ -670,6 +684,8 @@ class ReplayCore internal constructor() {
 
     /** The live session's frame buffer and message queue. For tests. */
     internal val liveScreenshots: MobileScreenshots? get() = screenshots
+    /** WebViews a privacy lookup left for the WebView scan. For tests. */
+    internal val pendingWebViewCount: Int get() = walkedWebViews.size
     internal val liveCollector: MobileCollector? get() = collector
 
     /** Block until the /start work queued so far has run. For tests. */

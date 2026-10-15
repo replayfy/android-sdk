@@ -38,6 +38,11 @@ import kotlin.math.floor
  * tracker records it. It is never copied or drawn: the frame is made without
  * reading a single pixel of the window.
  *
+ * A frame shows the window's surface, as PixelCopy copies it: while the
+ * window is panned for the keyboard (adjustPan), the content is drawn moved
+ * up by the pan. [privacyRects] and the WebView masks are in that frame's
+ * coordinates, and the draw fallback draws the window the same way.
+ *
  * [webViewRects] starts the frame's WebView scan on the main thread, next to
  * [privacyRects], and hands back an awaiter for its masks (null: no scan).
  * The awaiter is only ever called on the PixelCopy thread, just before the
@@ -355,7 +360,15 @@ class MobileScreenshots(
             return
         }
         val bmp = try {
-            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { view.draw(Canvas(it)) }
+            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also {
+                // Drawn as the window's surface shows it, which is what a
+                // PixelCopy frame and the masks are placed for: moved up by
+                // the window's adjustPan scroll while the keyboard is up.
+                val canvas = Canvas(it)
+                val o = PrivacyRegistry.frameOffset(view)
+                canvas.translate(o[0].toFloat(), o[1].toFloat())
+                view.draw(canvas)
+            }
         } catch (e: Throwable) {
             done(); return // skip frame
         }
@@ -454,7 +467,7 @@ class MobileScreenshots(
 
             // Mask sensitive rects per their style — OVERLAY paints a solid box,
             // BLUR blurs the region (rects were resolved on the main thread in
-            // `capture`, in unscaled decor-view coords; scale them to `scaled`).
+            // `capture`, in unscaled frame coords; scale them to `scaled`).
             // Scaled outward (floor the left/top, ceil the right/bottom): the
             // bilinear downscale blends a fractional edge pixel, which must
             // not survive outside the mask.

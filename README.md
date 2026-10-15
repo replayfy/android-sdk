@@ -268,7 +268,8 @@ Replay.setExcludedScreens(listOf("PinEntry", "Paywall"))  // replace the whole d
 Input capture is opt-in per field — never global. Values are recorded on
 focus-loss (not per keystroke), and every field masked in the recording
 (password, card and one-time-code fields, `occludeAllTextFields`, privacy
-views, secure windows) reports `"***"`, never its text.
+views, Compose `replayOcclude` regions, secure windows) reports `"***"`,
+never its text.
 
 ```kotlin
 Replay.addObservedInput(emailEditText)
@@ -339,25 +340,34 @@ automatically, always as a solid box, with no setup:
   and any page element with the class `rr-block`. With `occludeAllTextFields`
   every text input, textarea and `contenteditable` element of the page is
   masked too. Only the page's top document is searched: mask a WebView whose
-  fields sit in an iframe with `addPrivacyView(webView)`;
+  fields sit in an iframe with `addPrivacyView(webView)`. The search runs as
+  a script in the page, so a WebView with JavaScript turned off can't be
+  searched: mask it with `addPrivacyView(webView)` too;
 - every screen of a `FLAG_SECURE` window, recorded as a black frame (the window
   is never copied or drawn).
 
 Everything else is opt-in. The dashboard's "Always mask input values" setting
 masks every `EditText` from the next session start, on top of what the app
 sets: `occludeAllTextFields(false)` doesn't undo it. Taps on a masked view are
-labelled by resource id or class name, never by the text it shows.
+labelled by resource id or class name, never by the text it shows. A secure
+window's taps keep their labels: only its frames are blacked out.
+
+Masks follow what the screen shows: scrolling, clipping and transforms, the
+keyboard pushing the window up (`adjustPan`), and views sliding in with a
+classic view animation (a Fragment's `setCustomAnimations`), during which the
+whole area the animation can draw in is masked.
 
 Jetpack Compose text fields are not detected automatically. Mark secure
 Compose fields (passwords, card numbers, codes) with `Modifier.replayOcclude()`
-from the `sdk-compose` module.
+from the `sdk-compose` module. Its build from this release keeps those masks in
+place while the keyboard pans the window, and needs SDK 0.0.7 or later.
 
 ```kotlin
 Replay.addPrivacyView(cardNumberField)             // mask one view (and its children)
 Replay.removePrivacyView(cardNumberField)
 
 Replay.occludeAllTextFields(true)                  // mask every EditText
-Replay.occludeAllTextView(true)                    // mask every TextView / Button
+Replay.occludeAllTextView(true)                    // mask every TextView / Button / EditText
 Replay.applyOcclusion(CreditCardView::class.java)  // mask all instances of a view class
 Replay.removeOcclusion(CreditCardView::class.java)
 Replay.occludeSensitiveScreen(true)                // cover the entire screen (always solid)
@@ -370,7 +380,7 @@ Replay.setBlurDownscale(12)                        // stronger blur = larger fac
 |---|---|
 | `addPrivacyView(view)` / `removePrivacyView(view)` | Mask a single view (marks propagate to descendants). |
 | `occludeAllTextFields(occlude)` | Mask every `EditText` in the app (the dashboard can also force this on). |
-| `occludeAllTextView(occlude)` | Mask every `TextView` / `Button` (anything showing text). |
+| `occludeAllTextView(occlude)` | Mask every `TextView` / `Button` / `EditText` (anything showing text). |
 | `applyOcclusion(viewClass)` / `removeOcclusion(viewClass)` | Mask every instance of a custom view class. |
 | `occludeSensitiveScreen(occlude)` | Cover the entire captured screen with one solid box. |
 | `setMaskStyle(style)` | Default masking style — `ReplayMaskStyle.OVERLAY` (default, a solid box), `BLUR` or `PIXELATE`. Automatically masked fields, the whole-screen cover and secure screens are always solid. |

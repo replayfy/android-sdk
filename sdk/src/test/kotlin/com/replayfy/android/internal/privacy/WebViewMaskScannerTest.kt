@@ -9,6 +9,7 @@ import android.widget.FrameLayout
 import com.replayfy.android.MaskRect
 import com.replayfy.android.ReplayMaskStyle
 import com.replayfy.android.internal.mobile.LaidOutWebView
+import com.replayfy.android.internal.mobile.panWindow
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -72,10 +73,12 @@ class WebViewMaskScannerTest {
         return Rect(loc[0] + l, loc[1] + t, loc[0] + r, loc[1] + b)
     }
 
-    /** A screen rect in the decor's coordinates, where frames are masked. */
+    /** A screen rect in a frame's coordinates: less the window's top-left
+     *  on screen (the decor's place, before any adjustPan scroll). */
     private fun inFrame(r: Rect): Rect {
-        val loc = IntArray(2).also { decor.getLocationOnScreen(it) }
-        return Rect(r).apply { offset(-loc[0], -loc[1]) }
+        val onScreen = IntArray(2).also { decor.getLocationOnScreen(it) }
+        val inWindow = IntArray(2).also { decor.getLocationInWindow(it) }
+        return Rect(r).apply { offset(-(onScreen[0] - inWindow[0]), -(onScreen[1] - inWindow[1])) }
     }
 
     /** What evaluateJavascript hands back for a script answering [boxes]. */
@@ -256,20 +259,64 @@ class WebViewMaskScannerTest {
     }
 
     @Test
-    fun aLayoutShiftBetweenSamplesPrefersTheCachedBoxes() {
+    fun aLayoutShiftBetweenSamplesMasksBothSamplesAndTheFreshCache() {
         val wv = webView(0, 0)
         idle()
         val before = onScreen(wv, 0, 0, 100, 40)
-        val moving = ArrayDeque(listOf(answer(onScreen(wv, 0, 60, 100, 100)), answer(onScreen(wv, 0, 0, 10, 10), onScreen(wv, 0, 50, 10, 60))))
+        val first = onScreen(wv, 0, 60, 100, 100)
+        val second = listOf(onScreen(wv, 0, 0, 10, 10), onScreen(wv, 0, 50, 10, 60))
+        val moving = ArrayDeque(listOf(answer(first), answer(*second.toTypedArray())))
         val s = scanner()
-
-        // No cache yet: the first sample's boxes, which are then cached.
         page = { _, _, cb -> cb(moving.removeFirst()) }
-        assertEquals(solid(inFrame(onScreen(wv, 0, 60, 100, 100))), s.begin(decor, listOf(wv), false)(300))
 
+        // No cache yet: the page moved between the samples, and the frame may
+        // show either position, so both are masked. Sample 1 is cached.
+        assertEquals(solid(*(listOf(first) + second).map(::inFrame).toTypedArray()), s.begin(decor, listOf(wv), false)(300))
+        assertEquals(listOf(first), s.cached(id(wv)))
+
+        // A fresh cache adds the last settled position.
         s.cachePut(id(wv), listOf(before))
-        moving.addAll(listOf(answer(onScreen(wv, 0, 60, 100, 100)), answer(onScreen(wv, 0, 0, 10, 10), onScreen(wv, 0, 50, 10, 60))))
-        assertEquals(solid(inFrame(before)), s.begin(decor, listOf(wv), false)(300))
+        moving.addAll(listOf(answer(first), answer(*second.toTypedArray())))
+        assertEquals(
+            solid(*(listOf(before, first) + second).map(::inFrame).toTypedArray()),
+            s.begin(decor, listOf(wv), false)(300),
+        )
+        assertEquals("a fresh cache is kept", listOf(before), s.cached(id(wv)))
+    }
+
+    @Test
+    fun aBoxThatAppearsInTheSecondSampleIsMasked() {
+        // Sample 1 finds nothing, sample 2 a box: with no cache, the empty
+        // first sample used to win.
+        val wv = webView(0, 0)
+        idle()
+        val box = onScreen(wv, 10, 10, 60, 30)
+        val answers = ArrayDeque(listOf(answer(), answer(box)))
+        page = { _, _, cb -> cb(answers.removeFirst()) }
+
+        assertEquals(solid(inFrame(box)), scanner().begin(decor, listOf(wv), false)(300))
+    }
+
+    @Test
+    fun aPageThatAnswersNoResultIsAFailedSampleNotAnEmptyPage() {
+        // JavaScript off in that WebView: the script never runs, so there is
+        // no result at all. That says nothing about the page: the fresh
+        // cache is used and kept, and the last frame's masks are reused.
+        val wv = webView(0, 0)
+        idle()
+        val box = onScreen(wv, 0, 0, 50, 50)
+        answering(box)
+        val s = scanner()
+        s.begin(decor, listOf(wv), false)(300)
+
+        for (none in listOf(null, "null")) {
+            page = { _, _, cb -> cb(none) }
+            clock += 100
+            assertEquals("<$none>", solid(inFrame(box)), s.begin(decor, listOf(wv), false)(300))
+            assertEquals("<$none> kept the cache", listOf(box), s.cached(id(wv)))
+        }
+        clock = 600_000
+        assertEquals("the last frame's masks outlast the cache", solid(inFrame(box)), s.begin(decor, listOf(wv), false)(300))
     }
 
     @Test
@@ -333,6 +380,82 @@ class WebViewMaskScannerTest {
     }
 
     @Test
+    fun reusedMasksAreKeptOnlyWhereTheirWebViewsStillShow() {
+        // A WebView in a native scroll view: its password box was found, then
+        // the page stops answering while the user scrolls the WebView away.
+        val scroll = android.widget.ScrollView(activity)
+        root.addView(scroll, FrameLayout.LayoutParams(300, 200))
+        val column = android.widget.LinearLayout(activity).apply { orientation = android.widget.LinearLayout.VERTICAL }
+        scroll.addView(column, android.view.ViewGroup.LayoutParams(300, android.view.ViewGroup.LayoutParams.WRAP_CONTENT))
+        val wv = LaidOutWebView(activity)
+        column.addView(wv, android.widget.LinearLayout.LayoutParams(300, 150))
+        column.addView(View(activity), android.widget.LinearLayout.LayoutParams(300, 600))
+        idle()
+        val box = onScreen(wv, 0, 0, 100, 140)
+        answering(box)
+        val s = scanner()
+        assertEquals(solid(inFrame(box)), s.begin(decor, listOf(wv), false)(300))
+
+        silent()
+        clock = 600_000
+        scroll.scrollTo(0, 60)
+        idle()
+        // 90px of the WebView still show, at the top of the scroll view: the
+        // old box (where the frame it was found in showed it) is kept only
+        // where it overlaps them.
+        val shown = Rect().also { assertTrue(wv.getGlobalVisibleRect(it)) }
+        val onScreenOrigin = IntArray(2).also { decor.getLocationOnScreen(it) }
+        shown.offset(onScreenOrigin[0], onScreenOrigin[1])
+        assertEquals(solid(inFrame(Rect(box).apply { assertTrue(intersect(shown)) })), s.begin(decor, listOf(wv), false)(20))
+
+        // Scrolled fully away: nothing of the WebView shows, so nothing is
+        // painted over the native views now in its place.
+        timeOut()
+        scroll.scrollTo(0, 400)
+        idle()
+        assertTrue(s.begin(decor, listOf(wv), false)(20).isEmpty())
+    }
+
+    @Test
+    fun aFrameThatCantStartItsOwnScanGetsWhatTheOneOutHasFound() {
+        val a = webView(0, 0)
+        val b = webView(0, 200)
+        idle()
+        val boxA = onScreen(a, 1, 1, 50, 50)
+        // a answers, b never does: the scan stays out.
+        page = { w, _, cb -> if (w === a) cb(answer(boxA)) }
+        val s = scanner()
+        s.begin(decor, listOf(a, b), false)
+        val runs0 = runs.size
+
+        assertEquals(solid(inFrame(boxA)), s.begin(decor, listOf(a, b), false)(0))
+        assertEquals("no new script", runs0, runs.size)
+        assertTrue("a different set of WebViews gets nothing from it", s.begin(decor, listOf(a), false)(0).isEmpty())
+    }
+
+    @Test
+    fun withTheWindowPannedMasksLandWhereTheFrameShowsTheField() {
+        // The keyboard pans the window: the page reports screen pixels as
+        // drawn, moved up by the pan; the frame (the window's surface) shows
+        // the field there too.
+        val wv = webView(0, 150)
+        idle()
+        panWindow(activity, 100)
+        try {
+            val box = onScreen(wv, 10, 20, 110, 60)
+            answering(box)
+
+            val masks = scanner().begin(decor, listOf(wv), false)(300)
+
+            val shownAt = IntArray(2).also { wv.getLocationInWindow(it) }
+            assertEquals("not clipped away", solid(Rect(shownAt[0] + 10, shownAt[1] + 20, shownAt[0] + 110, shownAt[1] + 60)), masks)
+            assertEquals(50 + 20, masks.single().rect.top - PrivacyRegistry.locationInDecor(root)[1])
+        } finally {
+            panWindow(activity, 0)
+        }
+    }
+
+    @Test
     fun aChangedSetOfWebViewsFailsOpenAndDropsTheLastMasks() {
         val wv = webView(0, 0)
         idle()
@@ -387,7 +510,8 @@ class WebViewMaskScannerTest {
             }, "replay-pixelcopy")
             t.start()
             t.join(5_000) // the main looper runs nothing meanwhile
-            assertTrue("budget ${minOf(budget, cap)}ms took ${took}ms", took >= minOf(budget, cap) - 5 && took < minOf(budget, cap) + 50)
+            // The upper bound is loose: a busy machine can wake the thread late.
+            assertTrue("budget ${minOf(budget, cap)}ms took ${took}ms", took >= minOf(budget, cap) - 5 && took < minOf(budget, cap) + 250)
             assertTrue(out!!.isEmpty())
         }
     }

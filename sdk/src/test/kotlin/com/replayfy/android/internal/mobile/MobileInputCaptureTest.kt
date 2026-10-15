@@ -1,6 +1,8 @@
 package com.replayfy.android.internal.mobile
 
 import android.app.Activity
+import android.graphics.Rect
+import android.os.Looper
 import android.text.InputType
 import android.text.method.PasswordTransformationMethod
 import android.view.View
@@ -17,6 +19,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 
 /**
  * A field whose pixels are masked in the frames never ships its typed text:
@@ -29,7 +32,12 @@ class MobileInputCaptureTest {
     private lateinit var activity: Activity
     private lateinit var root: FrameLayout
     private val reported = ArrayList<Typed>()
-    private val capture = MobileInputCapture { value, masked, label -> reported.add(Typed(value, masked, label)) }
+    /** The masks a host SDK added to the last frame, in frame coordinates. */
+    private var hostMasks: List<Rect> = emptyList()
+    private val capture = MobileInputCapture(
+        onInput = { value, masked, label -> reported.add(Typed(value, masked, label)) },
+        hostMasks = { hostMasks },
+    )
 
     /** An occluded class around the field, not the field's own class. */
     private class CardRow(context: android.content.Context) : FrameLayout(context)
@@ -122,6 +130,51 @@ class MobileInputCaptureTest {
         val plain = field()
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         assertMasked("FLAG_SECURE window, recorded black", plain)
+    }
+
+    @Test
+    fun aFieldUnderAComposeMaskSendsNoText() {
+        // A classic field hosted in Compose (AndroidView) inside a
+        // replayOcclude region: the frames mask the region, so the value too.
+        val plain = field()
+        shadowOf(Looper.getMainLooper()).idle()
+        val at = PrivacyRegistry.decorRectOf(plain)
+        val token = Any()
+        try {
+            PrivacyRegistry.addComposeBounds(token, Rect(at.left, at.top, at.left + 10, at.top + 10))
+            assertMasked("under a Compose replayOcclude region", plain)
+            PrivacyRegistry.addComposeBounds(token, Rect(at.right + 50, at.bottom + 50, at.right + 60, at.bottom + 60))
+            assertEquals("a region elsewhere leaves it", false, leave(plain).masked)
+        } finally {
+            PrivacyRegistry.removeComposeBounds(token)
+        }
+    }
+
+    @Test
+    fun aFieldUnderAHostMaskSendsNoText() {
+        val plain = field()
+        shadowOf(Looper.getMainLooper()).idle()
+        val at = PrivacyRegistry.decorRectOf(plain)
+        hostMasks = listOf(Rect(at.left + 5, at.top + 5, at.left + 20, at.top + 20))
+        assertMasked("under a React Native / Flutter mask", plain)
+        hostMasks = listOf(Rect(at.right + 50, at.bottom + 50, at.right + 60, at.bottom + 60))
+        assertEquals("a mask elsewhere leaves it", false, leave(plain).masked)
+    }
+
+    @Test
+    fun hostMasksAreMatchedWhereTheFrameShowsTheField() {
+        // Host masks are in frame coordinates: with the window panned for
+        // the keyboard, the frame shows the field higher up.
+        val plain = field()
+        shadowOf(Looper.getMainLooper()).idle()
+        val at = PrivacyRegistry.decorRectOf(plain)
+        panWindow(activity, 30)
+        try {
+            hostMasks = listOf(Rect(at.left, at.top - 30, at.left + 10, at.top - 25))
+            assertMasked("the mask over the field in the panned frame", plain)
+        } finally {
+            panWindow(activity, 0)
+        }
     }
 
     @Test

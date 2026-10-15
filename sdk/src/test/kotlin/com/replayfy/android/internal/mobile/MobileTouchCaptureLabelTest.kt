@@ -20,9 +20,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 
 /**
- * A tap on a view masked in the frames is never named with what that view
- * shows: no text, no content description. Without a mask the visible text
- * names it, as before.
+ * A tap on a view a privacy rule masks in the frames is never named with
+ * what that view shows: no text, no content description. Without a mask the
+ * visible text names it, as before, and so it does on a FLAG_SECURE window,
+ * as in the reference tracker.
  */
 @RunWith(RobolectricTestRunner::class)
 class MobileTouchCaptureLabelTest {
@@ -56,19 +57,26 @@ class MobileTouchCaptureLabelTest {
         PrivacyRegistry.maskStyle = ReplayMaskStyle.OVERLAY
     }
 
-    /** The card's centre, in window coordinates (the events a
-     *  Window.Callback sees). */
+    /** The card's centre, in the decor's coordinates (the events a
+     *  Window.Callback sees: window coordinates with any adjustPan scroll
+     *  added back). */
     private fun centre(): Pair<Float, Float> {
-        val loc = IntArray(2).also { card.getLocationInWindow(it) }
+        val loc = PrivacyRegistry.locationInDecor(card)
         return (loc[0] + card.width / 2f) to (loc[1] + card.height / 2f)
     }
 
-    private fun tapCard(): String {
+    /** A tap on the card's centre as drawn, delivered as the window
+     *  delivers it: ViewRootImpl adds the window's [pan] back to x/y, the
+     *  raw (screen) position stays where the finger is. */
+    private fun tapCard(pan: Int = 0): String {
         labels.clear()
-        val (x, y) = centre()
+        val loc = IntArray(2).also { card.getLocationInWindow(it) }
+        val x = loc[0] + card.width / 2f
+        val y = loc[1] + card.height / 2f
         val down = SystemClock.uptimeMillis()
-        touch.handle(MotionEvent.obtain(down, down, MotionEvent.ACTION_DOWN, x, y, 0))
-        touch.handle(MotionEvent.obtain(down, down + 50, MotionEvent.ACTION_UP, x, y, 0))
+        for ((action, at) in listOf(MotionEvent.ACTION_DOWN to down, MotionEvent.ACTION_UP to down + 50)) {
+            touch.handle(MotionEvent.obtain(down, at, action, x, y, 0).apply { offsetLocation(0f, pan.toFloat()) })
+        }
         return labels.single()
     }
 
@@ -102,8 +110,31 @@ class MobileTouchCaptureLabelTest {
     }
 
     @Test
-    fun aSecureWindowKeepsTheTextOutOfTheLabel() {
+    fun aComposeMaskRegisteredWhilePannedStillCoversTheTouch() {
+        // The keyboard pans the window: the composable's window bounds move
+        // up by the pan, while the touch arrives with the pan added back.
+        val (x, y) = centre()
+        val token = Any()
+        panWindow(activity, 40)
+        try {
+            assertEquals("found under the pan", "4111 1111 1111 1111", tapCard(pan = 40))
+            com.replayfy.android.internal.bridge.ComposeBridge.registerOccludedBounds(
+                token, Rect(x.toInt() - 5, y.toInt() - 45, x.toInt() + 5, y.toInt() - 35), card,
+            )
+            assertEquals("TextView", tapCard(pan = 40))
+        } finally {
+            panWindow(activity, 0)
+            PrivacyRegistry.removeComposeBounds(token)
+        }
+    }
+
+    @Test
+    fun aSecureWindowKeepsItsTapLabelsAsTheReferenceDoes() {
+        // Its frames are black; its taps are still named, as the reference
+        // tracker names them. A privacy rule on the view still wins.
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        assertEquals("4111 1111 1111 1111", tapCard())
+        PrivacyRegistry.add(row)
         assertEquals("TextView", tapCard())
     }
 

@@ -47,13 +47,17 @@ could reach a recording around a mask.
     `<input>`, `<textarea>`, `contenteditable` and `.input-field` element.
 
   The masks follow scrolling and pinch zoom, and cover only the part of the
-  WebView that shows. Only the page's top document is searched, as in the
-  reference: fields inside an iframe or a shadow root are not found, so mask
-  such a WebView with `addPrivacyView(webView)`. When a page doesn't answer in
-  time, a frame reuses the previous frame's WebView masks while the same
-  WebViews are on screen, and otherwise records without them. This covers
-  React Native's `react-native-webview` too; Flutter apps capture their frames
-  in Dart and are unchanged.
+  WebView that shows. A page that moves while the SDK samples it (scrolling,
+  content shifting) is masked at every position it was seen in. Only the page's
+  top document is searched, as in the reference: fields inside an iframe or a
+  shadow root are not found, so mask such a WebView with
+  `addPrivacyView(webView)`. The search is a script, so a WebView with
+  JavaScript turned off can't be searched either (the SDK logs a warning
+  once); mask it the same way. When a page doesn't answer in time, a frame
+  reuses the previous frame's WebView masks while the same WebViews are on
+  screen, where one of them still shows, and otherwise records without them.
+  This covers React Native's `react-native-webview` too; Flutter apps capture
+  their frames in Dart and are unchanged.
 - **The dashboard's "Always mask input values" now applies to Android
   sessions.** When it is on, every `EditText` is masked, as with
   `occludeAllTextFields(true)`, from the next session start. It adds to the
@@ -69,21 +73,38 @@ could reach a recording around a mask.
   bounds. A view scaled up (an animation, a React Native transform) was masked
   at its smaller layout size, leaving its edges uncovered; a field partly
   scrolled out of view is now masked only where it shows.
+- Masks stay on their fields while the keyboard pans the window
+  (`adjustPan`). The window then draws its content moved up, and every mask
+  (views, fields, WebView pages, Compose `replayOcclude`) used to land that far
+  below what it covered, so the field being typed into could be recorded. The
+  software-draw fallback now draws the window as it shows on screen too.
+  Compose masks need the `sdk-compose` built from this release for this.
+- A view sliding in or out with a classic view animation (`startAnimation`, a
+  Fragment's `setCustomAnimations`) is drawn away from where its layout says.
+  While such an animation runs (or holds its last frame), a masked view inside
+  it is covered by the whole area the animation can draw in.
+- `occludeAllTextView(true)` on its own now masks `EditText`s in the recording
+  too. It masked every other `TextView` but left input fields to
+  `occludeAllTextFields`, so what was typed into them still showed in the
+  frames.
 - Jetpack Compose `replayOcclude` masks could land off target in split-screen
   and floating windows: they were offset by the window's position on screen.
 - Mask edges are rounded outward when a frame is scaled down, so a blended edge
   pixel of masked content no longer survives at the border of a mask.
 - `addObservedInput` reports `"***"` for every field masked in the recording:
   password, card and one-time-code fields, `occludeAllTextFields` (the app's or
-  the dashboard's), privacy views and classes, the whole-screen cover and secure
-  windows. Before, only a few exact password input types were masked, so a
-  `textPassword|textNoSuggestions` field or a field under
+  the dashboard's), privacy views and classes, the whole-screen cover, secure
+  windows, a Compose `replayOcclude` region over the field and a React Native
+  or Flutter mask over it. Before, only a few exact password input types were
+  masked, so a `textPassword|textNoSuggestions` field or a field under
   `occludeAllTextFields` sent its typed text.
 - A tap on a masked view is no longer named after what the view shows. It used
   to send up to 50 characters of the view's text (a card number in a privacy
   view, text under `occludeAllTextView`, a React Native `<Text>` inside
-  `<ReplayMask>`). Taps on masked views, under a Compose `replayOcclude` region
-  or on a secure window are named by resource id or class name instead.
+  `<ReplayMask>`). Taps on masked views or under a Compose `replayOcclude`
+  region are named by resource id or class name instead. Taps on a secure
+  window keep their labels, as in the reference SDK; only its frames are
+  black.
 
 ## [0.0.6] - 2026-10-14
 

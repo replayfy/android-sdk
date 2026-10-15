@@ -41,16 +41,24 @@ import kotlin.math.min
  * behave exactly as without the SDK.
  *
  * Each WebView is sampled twice in a row. Sample 1 failing (no answer in
- * [sampleTimeoutMs], an error) uses that WebView's cached rects while they
- * are fresh ([cacheTtlMs]), else nothing; the two samples disagreeing (a
- * layout shift: page scrolling, content moving) prefers the cached rects
- * too. Every rect is clipped to the part of the WebView that shows.
+ * [sampleTimeoutMs], an error, or no result at all: the script didn't run,
+ * as when the WebView's JavaScript is off) uses that WebView's cached rects
+ * while they are fresh ([cacheTtlMs]), else nothing. The two samples
+ * disagreeing (a layout shift: page scrolling, content moving) masks both
+ * samples' rects and the fresh cached ones: the frame may show any of those
+ * positions. Every rect is clipped to the part of the WebView that shows.
  *
  * Per frame: when the scan hasn't answered within the frame's budget, or
  * found nothing, the last frame's WebView masks are reused while the set of
- * WebViews on screen is unchanged, with no age limit. Otherwise the frame
- * has no WebView masks: like the reference, a scan that can't answer fails
- * open rather than blanking the page.
+ * WebViews on screen is unchanged, with no age limit, wherever one of those
+ * WebViews still shows. Otherwise the frame has no WebView masks: like the
+ * reference, a scan that can't answer fails open rather than blanking the
+ * page.
+ *
+ * Coordinates: the script reports screen pixels as drawn, which count the
+ * window's adjustPan scroll (the keyboard pushing the content up). A frame
+ * is the window's surface, so its masks are those rects less the window's
+ * top-left on screen.
  *
  * Threads: [begin] runs on the main thread, where the script runs and
  * answers. The awaiter it returns runs on the PixelCopy thread, NEVER on
@@ -80,6 +88,9 @@ internal class WebViewMaskScanner(
         private const val SHIFT_TOP_DP = 6f
 
         private val NONE: (Long) -> List<MaskRect> = { emptyList() }
+
+        /** One warning per process for a WebView whose script can't run. */
+        private val scriptOffWarned = AtomicBoolean(false)
 
         /**
          * The read-only page script, for a WebView whose top-left is at
@@ -205,8 +216,9 @@ internal class WebViewMaskScanner(
     // The scan still waiting on answers. Scans never overlap.
     private var inFlight: Scan? = null
 
-    /** One frame's scan of every WebView in it. */
-    private inner class Scan(val ids: Set<Int>, count: Int) {
+    /** One frame's scan of every WebView in it. [areas]: where those
+     *  WebViews show (screen px), or null when that isn't known. */
+    private inner class Scan(val ids: Set<Int>, count: Int, private val areas: List<Rect>?) {
         private val latch = CountDownLatch(count)
         private val results = AtomicReferenceArray<List<Rect>?>(count)
 
@@ -238,8 +250,9 @@ internal class WebViewMaskScanner(
             }
         }
 
-        /** Wait up to [budgetMs] for the answers. Off the main thread. */
-        fun await(budgetMs: Long, decorLoc: IntArray): List<MaskRect> {
+        /** Wait up to [budgetMs] for the answers. Off the main thread.
+         *  [origin]: the window's top-left on screen. */
+        fun await(budgetMs: Long, origin: IntArray): List<MaskRect> {
             val done = try {
                 latch.await(min(budgetMs, awaitBudgetMs).coerceAtLeast(0L), TimeUnit.MILLISECONDS)
             } catch (e: InterruptedException) {
@@ -247,51 +260,71 @@ internal class WebViewMaskScanner(
                 false
             }
             val found = found()
-            val rects = if (done && found.isNotEmpty()) found else withLastFrame(ids, found)
-            return toFrame(rects, decorLoc)
+            val rects = if (done && found.isNotEmpty()) found else withLastFrame(ids, found, areas)
+            return toFrame(rects, origin)
         }
     }
 
     /**
      * Start this frame's scan of [webViews] (the ones the privacy walk just
      * met in [decor]'s window) and return the awaiter that hands back its
-     * masks in [decor]'s coordinates. MAIN THREAD ONLY. No WebViews costs
-     * nothing: no script runs.
+     * masks in the frame's coordinates (the window's surface). MAIN THREAD
+     * ONLY. No WebViews costs nothing: no script runs.
      */
     fun begin(decor: View, webViews: List<WebView>, occludeAll: Boolean): (Long) -> List<MaskRect> {
         if (webViews.isEmpty()) return NONE
-        val decorLoc = IntArray(2).also { decor.getLocationOnScreen(it) }
+        // The decor as drawn on screen (after any adjustPan scroll), and the
+        // window's own top-left on screen: a frame's origin.
+        val onScreen = IntArray(2).also { decor.getLocationOnScreen(it) }
+        val inWindow = IntArray(2).also { decor.getLocationInWindow(it) }
+        val origin = intArrayOf(onScreen[0] - inWindow[0], onScreen[1] - inWindow[1])
         val ids = webViews.mapTo(HashSet()) { System.identityHashCode(it) }
+
+        // Where each WebView shows, on screen as drawn: a visible rect is in
+        // the decor's coordinates, which the decor's place on screen maps
+        // there. Null: it shows nothing. A lookup that throws leaves the
+        // areas unknown, so older masks are then reused unclipped.
+        val clips = arrayOfNulls<Rect>(webViews.size)
+        val unknown = BooleanArray(webViews.size)
+        webViews.forEachIndexed { i, wv ->
+            try {
+                val r = Rect()
+                if (wv.isShown && wv.getGlobalVisibleRect(r)) clips[i] = r.apply { offset(onScreen[0], onScreen[1]) }
+            } catch (e: Throwable) {
+                unknown[i] = true
+            }
+        }
+        val areas = if (unknown.any { it }) null else clips.filterNotNull()
+
         val scan = synchronized(lock) {
-            if (inFlight != null) null else Scan(ids, webViews.size).also { inFlight = it }
+            if (inFlight != null) null else Scan(ids, webViews.size, areas).also { inFlight = it }
         }
         if (scan == null) {
-            // The last scan is still out: no new script; this frame gets the
-            // last frame's masks, if they still apply.
-            return { _ -> toFrame(withLastFrame(ids, emptyList()), decorLoc) }
+            // The last scan is still out: no new script. This frame gets what
+            // that scan has found so far, when it covers the same WebViews,
+            // and the last frame's masks, if they still apply.
+            val out = synchronized(lock) { inFlight }?.takeIf { it.ids == ids }
+            return { _ -> toFrame(withLastFrame(ids, out?.found().orEmpty(), areas), origin) }
         }
 
-        // Window coordinates (the visible rects) to screen coordinates.
-        val inWindow = IntArray(2).also { decor.getLocationInWindow(it) }
-        val dx = decorLoc[0] - inWindow[0]
-        val dy = decorLoc[1] - inWindow[1]
         webViews.forEachIndexed { i, wv ->
             val id = System.identityHashCode(wv)
             try {
-                // A WebView that shows nothing needs no mask, nor a script.
-                val clip = Rect()
-                if (!wv.isShown || !wv.getGlobalVisibleRect(clip)) {
-                    scan.resolve(i, emptyList())
-                    return@forEachIndexed
+                val clip = clips[i]
+                when {
+                    unknown[i] -> scan.resolve(i, cached(id).orEmpty())
+                    // A WebView that shows nothing needs no mask, nor a script.
+                    clip == null -> scan.resolve(i, emptyList())
+                    else -> {
+                        val density = wv.resources.displayMetrics.density
+                        scanOne(WeakReference(wv), id, density, occludeAll) { rects -> scan.resolve(i, clipTo(rects, clip)) }
+                    }
                 }
-                clip.offset(dx, dy)
-                val density = wv.resources.displayMetrics.density
-                scanOne(WeakReference(wv), id, density, occludeAll) { rects -> scan.resolve(i, clipTo(rects, clip)) }
             } catch (e: Throwable) {
                 scan.resolve(i, cached(id).orEmpty())
             }
         }
-        return { budgetMs -> scan.await(budgetMs, decorLoc) }
+        return { budgetMs -> scan.await(budgetMs, origin) }
     }
 
     /** Forget everything: the session is over. */
@@ -324,10 +357,15 @@ internal class WebViewMaskScanner(
                         val midpoint = now()
                         sample(ref, occludeAll) { second ->
                             try {
-                                val shifted = second != null && detectLayoutShift(first.rects, second.rects, density)
-                                val fallback = if (shifted) cached(id) else null
-                                if (fallback != null) {
-                                    finish(fallback)
+                                if (second != null && detectLayoutShift(first.rects, second.rects, density)) {
+                                    // The page moved between the samples: the
+                                    // frame may show either position, or the
+                                    // last cached one. Mask them all. As in
+                                    // the reference, sample 1 is cached only
+                                    // when nothing fresh is.
+                                    val before = cached(id)
+                                    if (before == null) cachePut(id, first.rects)
+                                    finish((before.orEmpty() + first.rects + second.rects).distinct())
                                 } else {
                                     // The sample taken closest to the midpoint.
                                     val pick = if (second == null || abs(first.at - midpoint) <= abs(second.at - midpoint)) first else second
@@ -343,8 +381,8 @@ internal class WebViewMaskScanner(
     }
 
     /** Run the script in the WebView once; [then] gets its answer, or null
-     *  when it fails or doesn't answer within [sampleTimeoutMs]. An answer
-     *  that comes after the timeout is ignored. */
+     *  when it fails, doesn't answer within [sampleTimeoutMs], or answers no
+     *  result at all. An answer that comes after the timeout is ignored. */
     private fun sample(ref: WeakReference<WebView>, occludeAll: Boolean, then: (Sample?) -> Unit) {
         val wv = ref.get() ?: return then(null)
         val settled = AtomicBoolean(false)
@@ -355,7 +393,15 @@ internal class WebViewMaskScanner(
             evaluate(wv, script(loc[0], loc[1], occludeAll, MANUAL_CLASS)) { result ->
                 if (settled.compareAndSet(false, true)) {
                     main.removeCallbacks(timeout)
-                    then(Sample(parse(result), now()))
+                    if (result == null || result == "null") {
+                        // The script always answers a string, so no result
+                        // means it didn't run (JavaScript off in that
+                        // WebView): a failed sample, not an empty page.
+                        warnIfScriptOff(ref)
+                        then(null)
+                    } else {
+                        then(Sample(parse(result), now()))
+                    }
                 }
             }
         } catch (e: Throwable) {
@@ -367,12 +413,14 @@ internal class WebViewMaskScanner(
     }
 
     /** [found] plus the last frame's rects when the same WebViews are on
-     *  screen; otherwise the last frame's rects no longer apply and are
-     *  dropped. */
-    private fun withLastFrame(ids: Set<Int>, found: List<Rect>): List<Rect> = synchronized(lock) {
+     *  screen, kept where one of them shows ([areas]; all of them when
+     *  that isn't known): a mask outside every WebView can't hide a page,
+     *  only the native views there. Otherwise the last frame's rects no
+     *  longer apply and are dropped. */
+    private fun withLastFrame(ids: Set<Int>, found: List<Rect>, areas: List<Rect>?): List<Rect> = synchronized(lock) {
         val last = lastFrameRects
         if (lastIds == ids && last != null) {
-            (found + last).distinct()
+            (found + if (areas == null) last else clipTo(last, areas)).distinct()
         } else {
             lastFrameRects = null
             lastIds = null
@@ -380,15 +428,35 @@ internal class WebViewMaskScanner(
         }
     }
 
-    /** Screen rects to [decor]-relative masks, always solid. */
-    private fun toFrame(rects: List<Rect>, decorLoc: IntArray): List<MaskRect> =
+    /** Screen rects to frame masks (less the window's top-left on screen,
+     *  [origin]), always solid. */
+    private fun toFrame(rects: List<Rect>, origin: IntArray): List<MaskRect> =
         rects.map { r ->
-            MaskRect(Rect(r).apply { offset(-decorLoc[0], -decorLoc[1]) }, ReplayMaskStyle.OVERLAY)
+            MaskRect(Rect(r).apply { offset(-origin[0], -origin[1]) }, ReplayMaskStyle.OVERLAY)
         }
+
+    /** Warn once that a WebView answered no result while its JavaScript is
+     *  off: its page can't be scanned, so its password fields go unmasked.
+     *  On the main thread, where WebView settings are read. */
+    private fun warnIfScriptOff(ref: WeakReference<WebView>) {
+        if (scriptOffWarned.get()) return
+        val off = try { ref.get()?.settings?.javaScriptEnabled == false } catch (e: Throwable) { false }
+        if (off && scriptOffWarned.compareAndSet(false, true)) {
+            android.util.Log.w(
+                "ReplaySdk",
+                "A WebView has JavaScript turned off, so its page can't be scanned for password fields " +
+                    "to mask. Mask that WebView with Replay.addPrivacyView(webView).",
+            )
+        }
+    }
 
     /** The parts of [rects] inside [clip]. */
     private fun clipTo(rects: List<Rect>, clip: Rect): List<Rect> =
         rects.mapNotNull { r -> Rect(r).takeIf { it.intersect(clip) } }
+
+    /** The parts of [rects] inside any of [clips]. */
+    private fun clipTo(rects: List<Rect>, clips: List<Rect>): List<Rect> =
+        rects.flatMap { r -> clipTo(clips, r) }
 
     /** Remember [rects] as WebView [id]'s, evicting the oldest past [cacheMax]. */
     internal fun cachePut(id: Int, rects: List<Rect>) {

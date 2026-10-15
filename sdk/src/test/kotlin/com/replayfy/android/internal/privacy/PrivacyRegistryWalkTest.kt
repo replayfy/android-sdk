@@ -173,6 +173,120 @@ class PrivacyRegistryWalkTest {
     }
 
     @Test
+    fun occludeAllTextViewsAloneMasksInputFieldsToo() {
+        val field = plain().at(20, 30, 200, 40)
+        val label = TextView(activity).apply { text = "Card" }.at(20, 100, 200, 40)
+        idle()
+
+        PrivacyRegistry.occludeAllTextViews = true
+
+        // (The window's own title is a TextView too.)
+        val views = masks().map { it.rect }
+        assertTrue(views.containsAll(listOf(globalRect(field), globalRect(label))))
+        assertTrue("the events agree with the frames", PrivacyRegistry.isSensitive(field))
+        PrivacyRegistry.occludeAllTextFields = true
+        assertEquals("both switches: still one rect per field", views, masks().map { it.rect })
+    }
+
+    // ── Legacy view animations ───────────────────────────────────────
+
+    /** A Fragment-style screen: [container] holds [screen], which holds a
+     *  password field and a registered label. */
+    private inner class Screen {
+        val container = FrameLayout(activity).at(0, 100, 300, 200)
+        val screen = FrameLayout(activity).at(0, 0, 300, 200, container)
+        val field = password().at(20, 30, 200, 40, screen)
+        val label = TextView(activity).apply { text = "4111 1111 1111 1111" }.at(20, 100, 200, 40, screen)
+    }
+
+    @Test
+    fun aFieldMovedByALegacyAnimationIsMaskedWhereverTheAnimationCanDrawIt() {
+        val s = Screen()
+        PrivacyRegistry.add(s.label)
+        idle()
+        assertEquals("at rest, the field's own rect", listOf(globalRect(s.field)), masks().map { it.rect })
+
+        // A slide-in, as a Fragment's anim-resource transition runs it: the
+        // pixels move, the geometry doesn't. The container clips the screen,
+        // so its rect bounds where the field can be drawn.
+        s.screen.startAnimation(android.view.animation.TranslateAnimation(300f, 0f, 0f, 0f).apply { duration = 300 })
+
+        assertEquals(listOf(globalRect(s.container)), masks().map { it.rect })
+        assertEquals(listOf(globalRect(s.container)), PrivacyRegistry.sensitiveBounds(decor))
+
+        // Ended, but holding its last frame (fillAfter): still moved. Ended
+        // without it: drawn where it lies.
+        val slide = s.screen.animation
+        slide.startTime = 0
+        slide.getTransformation(10_000, android.view.animation.Transformation())
+        assertTrue(slide.hasEnded())
+        slide.fillAfter = true
+        assertEquals(listOf(globalRect(s.container)), masks().map { it.rect })
+        slide.fillAfter = false
+        assertEquals(listOf(globalRect(s.field)), masks().map { it.rect })
+
+        s.screen.clearAnimation()
+        assertEquals(listOf(globalRect(s.field)), masks().map { it.rect })
+        assertEquals(listOf(globalRect(s.label)), PrivacyRegistry.sensitiveBounds(decor))
+    }
+
+    @Test
+    fun anAnimatedScreenWithManyFieldsGivesOneBox() {
+        val s = Screen()
+        password().at(20, 150, 200, 40, s.screen)
+        idle()
+        s.screen.startAnimation(android.view.animation.AlphaAnimation(0f, 1f).apply { duration = 300 })
+
+        assertEquals(listOf(globalRect(s.container)), masks().map { it.rect })
+    }
+
+    // ── The window panned for the keyboard (adjustPan) ───────────────
+
+    @Test
+    fun aPannedWindowMovesTheFrameMasksButNotTheDecorRects() {
+        val field = password().at(20, 300, 200, 40)
+        idle()
+        val atRest = globalRect(field)
+        com.replayfy.android.internal.mobile.panWindow(activity, 120)
+        try {
+            assertEquals("the visible rect leaves the pan out", atRest, globalRect(field))
+            assertEquals(listOf(atRest), masks().map { it.rect })
+            assertEquals(0, PrivacyRegistry.frameOffset(decor)[0])
+            assertEquals(-120, PrivacyRegistry.frameOffset(decor)[1])
+            assertEquals(
+                "a frame shows it 120px higher",
+                listOf(Rect(atRest).apply { offset(0, -120) }),
+                PrivacyRegistry.inFrame(masks(), decor).map { it.rect },
+            )
+            assertEquals(atRest.left, PrivacyRegistry.locationInDecor(field)[0])
+            assertEquals(atRest.top, PrivacyRegistry.locationInDecor(field)[1])
+        } finally {
+            com.replayfy.android.internal.mobile.panWindow(activity, 0)
+        }
+        assertEquals("no pan, no move", masks(), PrivacyRegistry.inFrame(masks(), decor))
+    }
+
+    @Test
+    fun composeBoundsTakenWhilePannedStayRightWhenThePanChanges() {
+        val host = View(activity).at(0, 0, 300, 400)
+        idle()
+        val token = Any()
+        try {
+            // boundsInWindow counts the pan: at rest the composable is at
+            // (10, 300); with a 120px pan its window bounds say 180.
+            com.replayfy.android.internal.mobile.panWindow(activity, 120)
+            com.replayfy.android.internal.bridge.ComposeBridge.registerOccludedBounds(token, Rect(10, 180, 110, 220), host)
+            com.replayfy.android.internal.mobile.panWindow(activity, 0)
+
+            assertEquals(listOf(Rect(10, 300, 110, 340)), PrivacyRegistry.composeBoundsRelativeTo(decor))
+            assertTrue(PrivacyRegistry.isSensitiveAtPoint(50, 320))
+        } finally {
+            com.replayfy.android.internal.mobile.panWindow(activity, 0)
+            PrivacyRegistry.removeComposeBounds(token)
+        }
+    }
+
+    @Test
     fun theWalkCollectsWebViews() {
         val web = WebView(activity).at(0, 200, 300, 200)
         password().at(0, 0, 100, 40)
